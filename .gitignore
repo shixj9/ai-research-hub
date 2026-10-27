@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local HTTPS certificates
+backend/certs/
+
+# Runtime data
+storage/
+logs/
+
+# Frontend
+node_modules/
+dist/
+
+# Editors and operating systems
+.idea/
+.vscode/*.log
+.DS_Store
+Thumbs.db
+
