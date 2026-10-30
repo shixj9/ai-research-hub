@@ -73,3 +73,28 @@
 
 未来规则：
 - 当新增前端 `<iframe>` / `<embed>` / `<object>` 内嵌资源预览时，必须同步检查后端 `X-Frame-Options` 与 CSP `frame-ancestors` 响应头。
+
+## 2026-10-27 - Repository 类内 `def list()` 方法遮蔽内置 `list[...]` 类型注解
+
+问题：
+- 在 `DocumentRepository` 中定义 `def replace_pages(..., pages: list[DocumentPageCreate])` 时，导入阶段报错 `TypeError: 'staticmethod' object is not subscriptable`。
+
+原因：
+- `DocumentRepository` 已定义了同名静态方法 `def list(...)`，在未启用延迟注解求值时，Python 在类体作用域内将 `list[...]` 解析为对该静态方法对象做下标操作。
+
+修正：
+- 在 `backend/app/repositories/document.py` 顶部添加 `from __future__ import annotations`。
+
+未来规则：
+- 当类中存在与内置类型同名的方法（如 `list`、`set`、`dict`、`type`）时，文件顶部必须声明 `from __future__ import annotations`。
+
+## 2026-10-27 - PDF 文本提取中的 `\x00` 空字节与 PostgreSQL `TEXT` 字段兼容处理
+
+问题：
+- 部分学术 PDF 字体编码在 `pypdf.extract_text()` 时会产生 NUL (`\x00`) 字符，直接写入 PostgreSQL `TEXT` 字段会触发数据库异常。
+
+修正：
+- 在 `backend/app/services/document_parser.py` 的 `_normalize_page_text()` 中显式清理 `\x00` 并统一换行符。
+
+未来规则：
+- 任何外部文件解析出的文本在写入 PostgreSQL 前，必须经过 NUL (`\x00`) 字节清洗。

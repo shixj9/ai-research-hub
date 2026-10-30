@@ -2,7 +2,7 @@
 
 面向个人研究者的 AI 智能文档理解与研究分析平台。
 
-当前里程碑是 `v0.1` 最小闭环：React 前端、FastAPI 本地开发 HTTPS、PostgreSQL、SQLAlchemy、Alembic、PDF 上传和文档 CRUD。
+当前里程碑是 `v0.2` 文档接入与逐页解析闭环：React 工作台前端、FastAPI 本地开发 HTTPS、PostgreSQL、SQLAlchemy、Alembic、PDF 上传、文档 CRUD 以及 PDF 逐页文本提取与页码联动预览。
 
 ## 本地启动后端
 
@@ -55,6 +55,8 @@ npm run dev
 | `GET` | `/api/v1/documents` | 分页列出文档 |
 | `GET` | `/api/v1/documents/{id}` | 查询单篇文档 |
 | `GET` | `/api/v1/documents/{id}/file` | 在浏览器中打开原始 PDF |
+| `POST` | `/api/v1/documents/{id}/parse` | 触发 PDF 逐页文本解析并落盘 |
+| `GET` | `/api/v1/documents/{id}/pages` | 获取文档的逐页解析文本与统计 |
 | `PATCH` | `/api/v1/documents/{id}` | 更新文档字段 |
 | `DELETE` | `/api/v1/documents/{id}` | 软删除文档 |
 

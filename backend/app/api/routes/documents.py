@@ -23,8 +23,16 @@ from backend.app.repositories.document import DocumentRepository
 from backend.app.schemas.document import (
     DocumentCreate,
     DocumentListResponse,
+    DocumentPageListResponse,
+    DocumentParseResponse,
     DocumentResponse,
     DocumentUpdate,
+)
+from backend.app.services.document_parser import (
+    DocumentFileMissingError,
+    UnreadablePdfParseError,
+    list_document_pages,
+    parse_pdf_document,
 )
 from backend.app.services.document_upload import (
     DuplicateDocumentError,
@@ -132,6 +140,29 @@ def open_document_file(document_id: UUID, db: DatabaseSession) -> FileResponse:
         filename=document.original_filename or f"{document.id}.pdf",
         content_disposition_type="inline",
     )
+
+
+@router.post("/{document_id}/parse", response_model=DocumentParseResponse)
+def parse_document(document_id: UUID, db: DatabaseSession) -> DocumentParseResponse:
+    document = _get_document_or_404(db, document_id)
+    try:
+        return parse_pdf_document(db, document, storage_root=settings.storage_root)
+    except DocumentFileMissingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except UnreadablePdfParseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/{document_id}/pages", response_model=DocumentPageListResponse)
+def get_document_pages(document_id: UUID, db: DatabaseSession) -> DocumentPageListResponse:
+    document = _get_document_or_404(db, document_id)
+    return list_document_pages(db, document)
 
 
 @router.patch("/{document_id}", response_model=DocumentResponse)

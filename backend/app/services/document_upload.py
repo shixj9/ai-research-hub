@@ -138,7 +138,7 @@ def save_pdf_document(
         page_count = _validate_pdf(temporary_path)
 
         duplicate = DocumentRepository.get_by_sha256(db, sha256)
-        if duplicate is not None:
+        if duplicate is not None and duplicate.deleted_at is None:
             raise DuplicateDocumentError(duplicate.id)
 
         storage_key = f"blobs/{sha256[:2]}/{sha256}.pdf"
@@ -157,6 +157,9 @@ def save_pdf_document(
             storage_key=storage_key,
             status="uploaded",
         )
+
+        if duplicate is not None and duplicate.deleted_at is not None:
+            return DocumentRepository.restore(db, duplicate, payload, page_count=page_count)
 
         try:
             return DocumentRepository.create(db, payload, page_count=page_count)

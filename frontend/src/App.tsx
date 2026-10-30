@@ -7,17 +7,21 @@ import {
   useState,
 } from "react";
 import {
+  AlertCircle,
   ArrowLeft,
+  BookOpen,
   CheckCircle2,
   Database,
   ExternalLink,
   FileText,
   FolderOpen,
   HardDrive,
+  Info,
   Library,
   Menu,
   RefreshCw,
   Search,
+  Sparkles,
   Trash2,
   Upload,
   WifiOff,
@@ -27,18 +31,27 @@ import {
   checkBackend,
   deleteDocument,
   documentFileUrl,
+  listDocumentPages,
   listDocuments,
+  parseDocument,
   uploadDocument,
 } from "./api";
-import type { DocumentRecord } from "./types";
+import type { DocumentPageListResponse, DocumentPageRecord, DocumentRecord } from "./types";
 
 type Page = "library" | "detail";
+type InspectorTab = "pages" | "meta";
 
 const statusLabel: Record<DocumentRecord["status"], string> = {
-  uploaded: "已上传",
-  processing: "处理中",
-  ready: "已就绪",
-  failed: "失败",
+  uploaded: "待解析",
+  processing: "解析中",
+  ready: "已解析",
+  failed: "解析失败",
+};
+
+const pageStatusLabel: Record<DocumentPageRecord["status"], string> = {
+  ready: "已提取",
+  empty: "空白/无文本",
+  failed: "提取异常",
 };
 
 function formatBytes(value: number | null): string {
@@ -62,6 +75,11 @@ function App() {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [selected, setSelected] = useState<DocumentRecord | null>(null);
   const [page, setPage] = useState<Page>("library");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("pages");
+  const [pagesData, setPagesData] = useState<DocumentPageListResponse | null>(null);
+  const [pagesLoading, setPagesLoading] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [activePdfPage, setActivePdfPage] = useState<number>(1);
   const [query, setQuery] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
@@ -102,10 +120,31 @@ function App() {
     }
   }
 
+  async function loadPagesForDocument(documentId: string) {
+    setPagesLoading(true);
+    try {
+      const result = await listDocumentPages(documentId);
+      setPagesData(result);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "无法读取页面解析结果");
+    } finally {
+      setPagesLoading(false);
+    }
+  }
+
   useEffect(() => {
     void checkBackend().then(setBackendOnline);
     void refreshDocuments();
   }, []);
+
+  useEffect(() => {
+    if (page === "detail" && selected) {
+      setActivePdfPage(1);
+      void loadPagesForDocument(selected.id);
+    } else {
+      setPagesData(null);
+    }
+  }, [page, selected?.id]);
 
   useEffect(() => {
     function closeOnEscape(event: KeyboardEvent) {
@@ -125,6 +164,7 @@ function App() {
 
   function openDocument(document: DocumentRecord) {
     setSelected(document);
+    setInspectorTab("pages");
     setPage("detail");
     setSidebarOpen(false);
   }
@@ -163,12 +203,37 @@ function App() {
       setUploadOpen(false);
       await refreshDocuments();
       setSelected(created);
+      setInspectorTab("pages");
       setPage("detail");
       setMessage(`“${created.title}”已上传`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "上传失败");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleParse(document: DocumentRecord) {
+    setParsing(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await parseDocument(document.id);
+      setSelected(result.document);
+      await refreshDocuments();
+      await loadPagesForDocument(document.id);
+      setInspectorTab("pages");
+      if (result.document.status === "ready") {
+        setMessage(
+          `解析完成：共 ${result.total_pages} 页，提取 ${result.non_empty_pages} 页正文（${result.total_chars.toLocaleString()} 字符）`,
+        );
+      } else {
+        setError(result.document.parse_error ?? "未提取到有效正文");
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "解析失败");
+    } finally {
+      setParsing(false);
     }
   }
 
@@ -228,8 +293,8 @@ function App() {
           <div className="storage-summary">
             <Database size={15} />
             <div>
-              <span>文档元数据</span>
-              <small>PostgreSQL</small>
+              <span>元数据与分页正文</span>
+              <small>PostgreSQL · documents / document_pages</small>
             </div>
           </div>
         </div>
@@ -263,11 +328,12 @@ function App() {
                 </button>
                 <span className="header-divider" />
                 <span className="header-document-title">{selected.title}</span>
+                <span className={`status-tag ${selected.status}`}>{statusLabel[selected.status]}</span>
               </>
             ) : (
               <div>
                 <h1>文档库</h1>
-                <p>管理和查看本地研究资料</p>
+                <p>管理、预览和逐页解析本地研究资料</p>
               </div>
             )}
           </div>
@@ -291,14 +357,28 @@ function App() {
               </label>
             )}
             {page === "detail" && selected && (
-              <a
-                className="secondary-button"
-                href={documentFileUrl(selected.id)}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <ExternalLink size={15} /> 新窗口打开
-              </a>
+              <>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={parsing}
+                  onClick={() => void handleParse(selected)}
+                >
+                  {parsing ? (
+                    <><RefreshCw className="spin" size={15} /> 正在解析…</>
+                  ) : (
+                    <><Sparkles size={15} /> {selected.status === "ready" ? "重新解析正文" : "提取 PDF 正文"}</>
+                  )}
+                </button>
+                <a
+                  className="secondary-button"
+                  href={documentFileUrl(selected.id, activePdfPage)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <ExternalLink size={15} /> 新窗口打开
+                </a>
+              </>
             )}
             <button className="primary-button" type="button" onClick={openUpload}>
               <Upload size={15} /> 上传 PDF
@@ -382,59 +462,179 @@ function App() {
                 <div className="panel-heading">
                   <div>
                     <FileText size={16} />
-                    <span>PDF 预览</span>
+                    <span>PDF 原文预览（第 {activePdfPage} 页）</span>
                   </div>
-                  <span>{selected.page_count ?? "—"} 页</span>
+                  <span>共 {selected.page_count ?? "—"} 页</span>
                 </div>
                 <div className="pdf-frame-wrap">
-                  <iframe src={documentFileUrl(selected.id)} title={`${selected.title} PDF 预览`} />
+                  <iframe
+                    key={`${selected.id}-${activePdfPage}`}
+                    src={documentFileUrl(selected.id, activePdfPage)}
+                    title={`${selected.title} PDF 预览`}
+                  />
                 </div>
               </div>
 
               <aside className="document-inspector">
-                <div className="inspector-header">
-                  <span className="large-file-icon"><FileText size={22} /></span>
-                  <div>
-                    <h2>{selected.title}</h2>
-                    <p>{selected.original_filename ?? "PDF 文档"}</p>
-                  </div>
-                </div>
-
-                <div className="inspector-section">
-                  <h3>文档信息</h3>
-                  <dl>
-                    <div><dt>状态</dt><dd><span className={`status-tag ${selected.status}`}>{statusLabel[selected.status]}</span></dd></div>
-                    <div><dt>页数</dt><dd>{selected.page_count ?? "—"}</dd></div>
-                    <div><dt>文件大小</dt><dd>{formatBytes(selected.file_size)}</dd></div>
-                    <div><dt>文件类型</dt><dd>{selected.mime_type ?? "—"}</dd></div>
-                    <div><dt>上传时间</dt><dd>{formatDate(selected.created_at)}</dd></div>
-                  </dl>
-                </div>
-
-                <div className="inspector-section">
-                  <h3>存储信息</h3>
-                  <div className="technical-field">
-                    <span>文档 ID</span>
-                    <code>{selected.id}</code>
-                  </div>
-                  <div className="technical-field">
-                    <span>SHA-256</span>
-                    <code>{selected.sha256 ?? "—"}</code>
-                  </div>
-                  <div className="technical-field">
-                    <span>存储键</span>
-                    <code>{selected.storage_key ?? "—"}</code>
-                  </div>
-                </div>
-
-                <div className="inspector-actions">
-                  <a href={documentFileUrl(selected.id)} target="_blank" rel="noreferrer">
-                    <ExternalLink size={15} /> 新窗口打开
-                  </a>
-                  <button type="button" onClick={() => void handleDelete(selected)}>
-                    <Trash2 size={15} /> 删除文档
+                <div className="inspector-tabs" role="tablist" aria-label="详情面板切换">
+                  <button
+                    role="tab"
+                    type="button"
+                    aria-selected={inspectorTab === "pages"}
+                    className={`inspector-tab ${inspectorTab === "pages" ? "active" : ""}`}
+                    onClick={() => setInspectorTab("pages")}
+                  >
+                    <BookOpen size={14} />
+                    <span>逐页正文</span>
+                    {pagesData && pagesData.total_pages > 0 && (
+                      <span className="tab-badge">{pagesData.non_empty_pages}/{pagesData.total_pages}</span>
+                    )}
+                  </button>
+                  <button
+                    role="tab"
+                    type="button"
+                    aria-selected={inspectorTab === "meta"}
+                    className={`inspector-tab ${inspectorTab === "meta" ? "active" : ""}`}
+                    onClick={() => setInspectorTab("meta")}
+                  >
+                    <Info size={14} />
+                    <span>文档元数据</span>
                   </button>
                 </div>
+
+                {inspectorTab === "pages" ? (
+                  <div className="parsed-pages-panel">
+                    <div className="parse-summary-card">
+                      <div className="parse-summary-main">
+                        <strong>
+                          {selected.status === "ready"
+                            ? "已完成逐页文本提取"
+                            : selected.status === "failed"
+                              ? "未能提取到有效文本"
+                              : "尚未提取 PDF 文本"}
+                        </strong>
+                        <span>
+                          {pagesData && pagesData.total_pages > 0
+                            ? `${pagesData.non_empty_pages}/${pagesData.total_pages} 页含正文 · 共 ${pagesData.total_chars.toLocaleString()} 字符`
+                            : "点击按钮使用 pypdf 按页抽取原文并存入 PostgreSQL"}
+                        </span>
+                      </div>
+                      <button
+                        className="primary-button"
+                        type="button"
+                        disabled={parsing}
+                        onClick={() => void handleParse(selected)}
+                      >
+                        {parsing ? (
+                          <><RefreshCw className="spin" size={14} /> 解析中</>
+                        ) : (
+                          <><Sparkles size={14} /> {selected.status === "ready" ? "重新解析" : "开始解析"}</>
+                        )}
+                      </button>
+                    </div>
+
+                    {(selected.parse_error || pagesData?.parse_error) && (
+                      <div className="parse-error-banner" role="alert">
+                        <AlertCircle size={15} />
+                        <span>{selected.parse_error ?? pagesData?.parse_error}</span>
+                      </div>
+                    )}
+
+                    {pagesLoading ? (
+                      <div className="state-panel compact">
+                        <RefreshCw className="spin" size={18} />
+                        <span>正在读取分页正文…</span>
+                      </div>
+                    ) : !pagesData || pagesData.items.length === 0 ? (
+                      <div className="empty-pages-hint">
+                        <BookOpen size={24} />
+                        <strong>暂无已保存的分页正文</strong>
+                        <p>点击上方“开始解析”，系统将逐页提取文本并与左侧 PDF 预览建立页码联动。</p>
+                      </div>
+                    ) : (
+                      <div className="page-card-list">
+                        {pagesData.items.map((item) => (
+                          <article
+                            key={item.id}
+                            className={`page-card ${activePdfPage === item.page_number ? "is-active" : ""}`}
+                          >
+                            <header className="page-card-header">
+                              <button
+                                type="button"
+                                className="page-jump-button"
+                                onClick={() => setActivePdfPage(item.page_number)}
+                                title={`左侧 PDF 跳转到第 ${item.page_number} 页`}
+                              >
+                                <strong>第 {item.page_number} 页</strong>
+                                <span>跳转预览</span>
+                              </button>
+                              <div className="page-card-meta">
+                                <span>{item.char_count.toLocaleString()} 字符</span>
+                                <span className={`page-status-badge ${item.status}`}>
+                                  {pageStatusLabel[item.status]}
+                                </span>
+                              </div>
+                            </header>
+                            {item.status === "ready" ? (
+                              <pre className="page-card-text">{item.text}</pre>
+                            ) : (
+                              <p className="page-card-empty">
+                                {item.error_message ?? "该页未检测到可提取的文本层（空白页或纯图片内容）。"}
+                              </p>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <div className="inspector-header">
+                      <span className="large-file-icon"><FileText size={22} /></span>
+                      <div>
+                        <h2>{selected.title}</h2>
+                        <p>{selected.original_filename ?? "PDF 文档"}</p>
+                      </div>
+                    </div>
+
+                    <div className="inspector-section">
+                      <h3>文档信息</h3>
+                      <dl>
+                        <div><dt>状态</dt><dd><span className={`status-tag ${selected.status}`}>{statusLabel[selected.status]}</span></dd></div>
+                        <div><dt>页数</dt><dd>{selected.page_count ?? "—"}</dd></div>
+                        <div><dt>文件大小</dt><dd>{formatBytes(selected.file_size)}</dd></div>
+                        <div><dt>文件类型</dt><dd>{selected.mime_type ?? "—"}</dd></div>
+                        <div><dt>上传时间</dt><dd>{formatDate(selected.created_at)}</dd></div>
+                        <div><dt>解析时间</dt><dd>{selected.parsed_at ? formatDate(selected.parsed_at) : "尚未解析"}</dd></div>
+                      </dl>
+                    </div>
+
+                    <div className="inspector-section">
+                      <h3>存储信息</h3>
+                      <div className="technical-field">
+                        <span>文档 ID</span>
+                        <code>{selected.id}</code>
+                      </div>
+                      <div className="technical-field">
+                        <span>SHA-256</span>
+                        <code>{selected.sha256 ?? "—"}</code>
+                      </div>
+                      <div className="technical-field">
+                        <span>存储键</span>
+                        <code>{selected.storage_key ?? "—"}</code>
+                      </div>
+                    </div>
+
+                    <div className="inspector-actions">
+                      <a href={documentFileUrl(selected.id, activePdfPage)} target="_blank" rel="noreferrer">
+                        <ExternalLink size={15} /> 新窗口打开
+                      </a>
+                      <button type="button" onClick={() => void handleDelete(selected)}>
+                        <Trash2 size={15} /> 删除文档
+                      </button>
+                    </div>
+                  </>
+                )}
               </aside>
             </section>
           )}

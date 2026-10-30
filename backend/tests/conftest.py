@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app.db.base import Base
 from backend.app.db.session import get_db
 from backend.app.main import app
-from backend.app.models import Document  # noqa: F401
+from backend.app.models import Document, DocumentPage  # noqa: F401
 
 
 class ApiClient:

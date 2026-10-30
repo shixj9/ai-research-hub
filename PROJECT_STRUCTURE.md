@@ -61,6 +61,7 @@ Schema 不是数据库表；它定义 API 允许客户端看到或提交的字�
 SQLAlchemy 数据模型，对应真实数据库表。
 
 - `models/document.py`：对应 PostgreSQL 的 `documents` 表。
+- `models/document_page.py`：对应 PostgreSQL 的 `document_pages` 表（保存逐页提取文本、字符数与单页状态）。
 
 Model 可以包含数据库约束、字段类型、索引和默认值。客户端不能直接控制 Model。
 
@@ -68,7 +69,7 @@ Model 可以包含数据库约束、字段类型、索引和默认值。客户�
 
 数据库访问层。集中保存查询、插入、更新和软删除操作。
 
-- `repositories/document.py`：`documents` 表的数据操作。
+- `repositories/document.py`：`documents` 与 `document_pages` 表的数据操作（含软删除恢复与事务内幂等替换页面记录）。
 
 接口层通过 Repository 操作数据库，避免 SQL 查询散落在路由文件里。加入文件上传、解析任务等业务规则后，可以在 API 和 Repository 之间增加 `services/` 层。
 
@@ -76,7 +77,8 @@ Model 可以包含数据库约束、字段类型、索引和默认值。客户�
 
 跨越多个基础设施的业务工作流。
 
-- `services/document_upload.py`：流式接收 PDF、限制大小、验证格式、计算 SHA-256、提取页数、移动文件并创建数据库记录。
+- `services/document_upload.py`：流式接收 PDF、限制大小、验证格式、计算 SHA-256、提取页数、移动文件并创建/恢复数据库记录。
+- `services/document_parser.py`：读取本地存储的 PDF，使用 `pypdf` 逐页提取文本、清理空字节、识别空白页与纯扫描件，并将分页文本写入 `document_pages` 表。
 
 上传服务同时协调文件系统、PDF 解析器和 Repository，因此不能放进单纯的 API 或数据库访问层。
 

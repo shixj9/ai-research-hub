@@ -25,6 +25,8 @@ class Document(Base):
     sha256: Mapped[str | None] = mapped_column(String(64), unique=True)
     storage_key: Mapped[str | None] = mapped_column(String(1000), unique=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="uploaded")
+    parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    parse_error: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

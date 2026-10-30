@@ -13,6 +13,12 @@ class DocumentStatus(StrEnum):
     FAILED = "failed"
 
 
+class DocumentPageStatus(StrEnum):
+    READY = "ready"
+    EMPTY = "empty"
+    FAILED = "failed"
+
+
 class DocumentCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -56,6 +62,8 @@ class DocumentResponse(BaseModel):
     sha256: str | None
     storage_key: str | None
     status: DocumentStatus
+    parsed_at: datetime | None = None
+    parse_error: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -65,3 +73,45 @@ class DocumentListResponse(BaseModel):
     total: int
     offset: int
     limit: int
+
+
+class DocumentPageCreate(BaseModel):
+    page_number: Annotated[int, Field(ge=1)]
+    text: str = ""
+    char_count: Annotated[int, Field(ge=0)] = 0
+    status: DocumentPageStatus = DocumentPageStatus.READY
+    error_message: Annotated[str | None, Field(max_length=500)] = None
+
+
+class DocumentPageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    document_id: UUID
+    page_number: int
+    text: str
+    char_count: int
+    status: DocumentPageStatus
+    error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentPageListResponse(BaseModel):
+    document_id: UUID
+    document_status: DocumentStatus
+    parsed_at: datetime | None
+    parse_error: str | None
+    total_pages: int
+    non_empty_pages: int
+    total_chars: int
+    items: list[DocumentPageResponse]
+
+
+class DocumentParseResponse(BaseModel):
+    document: DocumentResponse
+    total_pages: int
+    non_empty_pages: int
+    empty_pages: int
+    failed_pages: int
+    total_chars: int

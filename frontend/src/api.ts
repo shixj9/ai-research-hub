@@ -1,4 +1,9 @@
-import type { DocumentListResponse, DocumentRecord } from "./types";
+import type {
+  DocumentListResponse,
+  DocumentPageListResponse,
+  DocumentParseResponse,
+  DocumentRecord,
+} from "./types";
 
 export const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ?? "/api/v1"
@@ -46,6 +51,17 @@ export function deleteDocument(documentId: string): Promise<void> {
   return request<void>(`/documents/${documentId}`, { method: "DELETE" });
 }
 
-export function documentFileUrl(documentId: string): string {
-  return `${API_BASE_URL}/documents/${documentId}/file`;
+export function parseDocument(documentId: string): Promise<DocumentParseResponse> {
+  return request<DocumentParseResponse>(`/documents/${documentId}/parse`, {
+    method: "POST",
+  });
+}
+
+export function listDocumentPages(documentId: string): Promise<DocumentPageListResponse> {
+  return request<DocumentPageListResponse>(`/documents/${documentId}/pages`);
+}
+
+export function documentFileUrl(documentId: string, pageNumber?: number): string {
+  const base = `${API_BASE_URL}/documents/${documentId}/file`;
+  return pageNumber && pageNumber >= 1 ? `${base}#page=${pageNumber}` : base;
 }

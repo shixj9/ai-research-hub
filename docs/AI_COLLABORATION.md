@@ -2,9 +2,9 @@
 
 本文件用于用户、Codex 与 Antigravity 在同一项目中共享事实、决策、任务状态和交接信息。开始新的项目任务前应先阅读本文件，但它不覆盖用户的最新指令、项目 `AGENTS.md` 或安全规则。
 
-最后审计时间：2026-10-26  
-当前版本：`v0.1` 文档接入闭环  
-当前阶段结论：基础设施、PDF 上传与文档管理已经可用；正文解析、检索与 AI 分析尚未开始。
+最后审计时间：2026-10-27  
+当前版本：`v0.2` 文档接入与逐页解析闭环  
+当前阶段结论：基础设施、PDF 上传、文档管理与 PDF 逐页文本提取闭环（`document_pages` + 前端详情页逐页对照与跳页）已经可用；文本切块、检索与 AI 分析尚未开始。
 
 ## 1. 共同目标
 
@@ -90,10 +90,11 @@ Service 业务流程
 | 文档元数据 CRUD | 已完成 | 创建、列表、详情、更新、软删除 |
 | PDF 上传 | 已完成 | 流式保存、100 MB 默认限制、格式验证、页数、SHA-256 |
 | 文件去重与内容寻址 | 已完成 | SHA-256 唯一约束和哈希路径 |
-| 原始 PDF 在线读取 | 已完成 | `GET /documents/{id}/file`（支持 `SAMEORIGIN` 页内预览） |
-| 基础前端（中性工作台） | 已完成 | 侧边栏导航、表格化文档库、搜索过滤、弹窗上传、分栏详情与内嵌 PDF 预览 |
+| 原始 PDF 在线读取 | 已完成 | `GET /documents/{id}/file`（支持 `SAMEORIGIN` 页内预览与 `#page=N` 跳页） |
+| PDF 逐页正文提取与持久化 | 已完成 | `POST /documents/{id}/parse`、`GET /documents/{id}/pages`、`document_pages` 表与扫描件识别 |
+| 基础前端（中性工作台） | 已完成 | 侧边栏导航、表格化文档库、搜索过滤、弹窗上传、分栏详情、内嵌 PDF 预览与逐页正文卡片联动 |
 | 本地 HTTPS | 已完成 | 自签名证书脚本和 FastAPI HTTPS 启动脚本 |
-| 自动测试 | 已完成基础覆盖 | 9 项后端测试通过（含上传、CRUD、内联预览响应头断言） |
+| 自动测试 | 已完成基础覆盖 | 14 项后端测试通过（含上传、CRUD、内联预览、多页解析、空白页、扫描件失败、幂等重跑与软删除恢复） |
 | 前端构建验证 | 已完成 | TypeScript 与 Vite 生产构建通过 |
 | 项目与目录说明 | 已完成基础版本 | `README.md`、`PROJECT_STRUCTURE.md` |
 
@@ -101,9 +102,7 @@ Service 业务流程
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
-| PDF 正文提取 | 未开始 | 当前只验证 PDF 并统计页数 |
-| 分页数据持久化 | 未开始 | 尚无 `document_pages` 表 |
-| 文本切块 | 未开始 | 尚无 `document_chunks` 表和切块策略 |
+| 文本切块 | 未开始 | 已有 `document_pages` 逐页原文，尚无 `document_chunks` 表和切块策略 |
 | OCR | 未开始 | 扫描件暂时无法提取文字 |
 | 表格与图片解析 | 未开始 | 尚未选型和定义结果结构 |
 | 全文检索 | 未开始 | 无关键词索引和检索接口 |
@@ -137,26 +136,45 @@ Service 业务流程
 - `frontend/npm run build`：通过。
 - `storage/dev/blobs/` 中存在 1 个 PDF，大小 2,215,244 字节，SHA-256 文件名为 `bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697.pdf`。
 - 已核对 PostgreSQL `documents` 表真实记录：存在对应文档 `74433984-a43d-4d63-ba6a-c4da3b0c4591`（标题 `attention is all you need`，原文件名 `1706.03762v7.pdf`，15 页，状态 `uploaded`，未软删除）。
-- Git 仓库尚无首个提交，当前项目文件全部未跟踪。继续扩大功能前应建立可回退的初始基线，但必须由用户明确决定何时提交。
+- Git 仓库已完成初始基线提交（`ea0722a chore: establish v0 document management baseline`）并推送至远程仓库 `https://github.com/shixj9/ai-research-hub.git`。
 - 后端测试使用临时 SQLite，速度快但不能替代 PostgreSQL 集成测试；涉及迁移、PostgreSQL 类型和 pgvector 时必须补真实数据库测试。
-- 已软删除文档的 SHA-256 仍受唯一约束，当前不能重新上传同一文件。是否允许恢复或重新上传尚未决策。
+- 已软删除文档的 SHA-256 仍受唯一约束，将在下一阶段按“重复上传自动恢复记录”实现。
 
-## 9. 下一阶段建议：PDF 解析最小闭环
+## 9. 已完成阶段：PDF 解析最小闭环（v0.2）与下一阶段建议（v0.3 切块与关键词检索）
 
-状态：`等待用户进行架构选择，尚未批准实现`。
+状态：`DONE（v0.2 PDF 逐页解析闭环已完成并通过验证）`。
 
-建议下一阶段只实现：原始 PDF → 分页文本 → 数据库存储 → 页面查看解析结果。不要同时加入 embedding、RAG、OCR 和多 Agent。
+目标：实现 **原始 PDF → 逐页文本提取 → `document_pages` 数据库存储 → 前端详情页展示解析文本与页码联动**，暂不引入 Embedding、RAG、OCR 和多 Agent。
 
-需要 Antigravity 提供并由用户确认的选项：
+### 已确认的核心技术契约（方案 A）
 
-1. 解析是在上传请求中同步完成，还是使用独立的 `POST /documents/{id}/parse` 接口？
-2. 第一版解析接口同步执行，还是立即引入异步任务队列？
-3. 页面级数据至少保存哪些字段，例如 `page_number`、`text`、`char_count`、`status` 和 `error_message`？
-4. 单页无文本与整篇扫描件分别使用什么状态？
-5. 第一版文本提取使用 pypdf、PyMuPDF 还是 pdfplumber，选择依据是什么？
-6. 软删除文档再次上传时，是拒绝、恢复旧记录还是创建新版本？
+1. **触发与接口**：上传与解析分离，新增 `POST /api/v1/documents/{id}/parse`（同步执行解析，支持幂等重跑覆盖旧页）与 `GET /api/v1/documents/{id}/pages`（按页码升序返回逐页文本与汇总统计）。
+2. **数据表设计 (`document_pages` + `documents` 扩展)**：
+   - `document_pages`：`id (UUID PK)`、`document_id (UUID FK -> documents.id, ON DELETE CASCADE)`、`page_number (int >= 1)`、`text (Text)`、`char_count (int >= 0)`、`status ('ready' | 'empty' | 'failed')`、`error_message (String(500) | None)`、`created_at`、`updated_at`；唯一约束 `UNIQUE(document_id, page_number)`。
+   - `documents` 补充字段：`parsed_at (DateTime | None)`、`parse_error (String(500) | None)`。
+3. **扫描件与空页状态规则**：
+   - 单页去除首尾空白后 `char_count > 0` → 页面 `status = 'ready'`；
+   - 单页 `char_count == 0`（如空白页或纯图片页）→ 页面 `status = 'empty'`；
+   - 若整篇文档所有页有效字符数总和为 `0`（典型纯图片扫描件）→ 文档 `Document.status = 'failed'`，并写入 `parse_error = "No extractable text layer found (scanned PDF requires OCR)"`。
+4. **软删除重传恢复规则**：当 `POST /api/v1/documents/upload` 上传的 PDF `sha256` 命中已软删除记录（`deleted_at IS NOT NULL`）时，自动恢复该记录（置 `deleted_at = None`，更新 `title`、`original_filename`），不再死锁报 409。
 
-推荐倾向但尚未批准：上传和解析接口分离；第一版解析可以同步执行，保留未来替换为异步任务的边界；先保存逐页文本，再讨论切块。
+### 分步实施拆解（5 个可独立验证的步骤）
+
+- **Step 1：数据模型与 Alembic 迁移层（Model + Migration）**
+  - 在 `backend/app/models/` 定义 `DocumentPage` 模型，扩展 `Document` 模型的 `parsed_at` 与 `parse_error` 字段；
+  - 编写 Alembic 迁移 `20261027_0003_add_document_pages.py`，在 PostgreSQL 中执行 `uv run alembic upgrade head` 验证表结构与约束。
+- **Step 2：Schema 契约与 Repository 数据访问层**
+  - 在 `backend/app/schemas/document.py` 定义 `DocumentPageResponse`、`DocumentPageListResponse`、`DocumentParseResponse`；
+  - 在 `backend/app/repositories/document.py` 实现 `replace_pages()`（事务内先删旧页再插新页并更新文档状态）、`list_pages()` 以及软删除文档恢复方法 `restore()`。
+- **Step 3：PDF 逐页解析服务层（`backend/app/services/document_parser.py`）**
+  - 读取本地 `storage/dev/blobs/` 下的 PDF，使用 `pypdf` 逐页提取文本、统计字符数、判定单页 `ready/empty/failed` 与整篇文档 `ready/failed` 状态；
+  - 在 `document_upload.py` 中接入已软删除文档重复上传时的自动恢复逻辑。
+- **Step 4：API 路由挂载与后端自动化测试（Routes + Pytest）**
+  - 在 `backend/app/api/routes/documents.py` 挂载 `POST /documents/{id}/parse` 与 `GET /documents/{id}/pages`；
+  - 新增 `backend/tests/test_document_parse.py`，覆盖：多页正常解析、含空白页解析、纯扫描件（全空页）识别为 `failed`、重复解析幂等覆盖、软删除重传自动恢复 5 类测试。
+- **Step 5：前端工作台解析交互与逐页文本展示（Frontend）**
+  - 在 `frontend/src/api.ts` 与 `types.ts` 封装解析触发与逐页查询接口；
+  - 在 `frontend/src/App.tsx` 详情页增加「开始解析 / 重新解析」按钮、解析状态/错误提示、逐页文本卡片浏览及点击页码联动左侧 PDF 预览（`#page=N`）。
 
 ## 10. 标准任务流程
 
@@ -223,6 +241,67 @@ Service 业务流程
 - 重大方案存在分歧时并列理由，交给用户决定，不通过相互覆盖代码解决。
 
 ## 13. 最近通信记录
+
+### 2026-10-27 19:36 - Antigravity → 用户 & Codex：完成 PDF 解析最小闭环（v0.2）全栈实现与验证
+
+- 状态：`DONE`
+- 用户目标：按已确认的 5 步方案一气呵成完成 PDF 解析最小闭环（将 PDF 提取为逐页文本存入 `document_pages` 表，并在前端详情页展示且支持页码联动）。
+- 本次完成：
+  1. **Step 1（数据模型与迁移）**：新增 `backend/app/models/document_page.py`（`DocumentPage` 模型，含 `(document_id, page_number)` 唯一约束与状态检查约束），在 `Document` 模型新增 `parsed_at` 与 `parse_error` 字段，编写并执行 Alembic 迁移 `20261027_0003_add_document_pages.py`（PostgreSQL 已升级至 `20261027_0003`）。
+  2. **Step 2（Schema 与 Repository）**：在 `backend/app/schemas/document.py` 新增 `DocumentPageCreate`、`DocumentPageResponse`、`DocumentPageListResponse`、`DocumentParseResponse`；在 `backend/app/repositories/document.py` 实现事务内幂等替换页面 `replace_pages()`、按页码升序查询 `list_pages()` 及软删除恢复 `restore()`。
+  3. **Step 3（解析服务与软删除恢复）**：新增 `backend/app/services/document_parser.py`，使用 `pypdf` 逐页提取文本、清洗 `\x00` 字符、区分单页 `ready/empty/failed` 状态，并在整篇无有效文本（扫描件）时将文档标记为 `failed` 及写入 OCR 提示；在 `document_upload.py` 接入软删除文档重传自动恢复。
+  4. **Step 4（API 路由与测试）**：在 `backend/app/api/routes/documents.py` 挂载 `POST /api/v1/documents/{id}/parse` 与 `GET /api/v1/documents/{id}/pages`；新增 `backend/tests/test_document_parse.py`（5 项新测试），并使用真实论文《Attention Is All You Need》（15 页，39,585 字符）验证逐页解析通过。
+  5. **Step 5（前端工作台联动）**：更新 `frontend/src/types.ts`、`api.ts`、`App.tsx`、`styles.css`，在详情页右侧栏增加「逐页正文 / 文档元数据」双标签页、一键解析/重新解析按钮、扫描件错误横幅、逐页正文卡片及点击页码联动左侧 PDF 预览（`#page=N`）。
+- 修改文件：`backend/app/models/document.py`、`backend/app/models/document_page.py`、`backend/app/models/__init__.py`、`backend/migrations/env.py`、`backend/migrations/versions/20261027_0003_add_document_pages.py`、`backend/app/schemas/document.py`、`backend/app/repositories/document.py`、`backend/app/services/document_upload.py`、`backend/app/services/document_parser.py`、`backend/app/api/routes/documents.py`、`backend/tests/conftest.py`、`backend/tests/test_document_parse.py`、`frontend/src/types.ts`、`frontend/src/api.ts`、`frontend/src/App.tsx`、`frontend/src/styles.css`、`README.md`、`PROJECT_STRUCTURE.md`、`review/mistakes-and-lessons.md`、`docs/AI_COLLABORATION.md`。
+- 验证命令与结果：`uv run pytest`（14 passed in 0.36s）、`uv run ruff check .`（All checks passed）、`uv run alembic upgrade head`（升级至 `20261027_0003`）、真实 15 页 PDF 解析验证（提取 15 页共 39,585 字符）、`frontend: npm run build`（通过）。
+- 已确认决策：完成 `v0.2` 逐页文本事实层（`document_pages`）建设。
+- 未解决问题或风险：无。
+- 建议下一步：用户在浏览器体验逐页解析与点击页码跳转预览，完成本模块复述问答并提交 Git（`feat: add v0.2 PDF page parsing and detail view integration`）；随后可规划 `v0.3`（基于 `document_pages` 的文本切块 `document_chunks` 与关键词检索）。
+- 需要用户决定：验证 `v0.2` 效果并确认是否进入 `v0.3`（文本切块与关键词检索）设计。
+
+### 2026-10-27 18:27 - Antigravity → 用户 & Codex：PDF 解析最小闭环（v0.2）5 步实施计划定案
+
+- 状态：`APPROVED`
+- 用户目标：已完成 `v0` 基线提交并推送远程仓库；现启动 PDF 解析最小闭环（将 PDF 变成逐页文本存入数据库并在前端详情页展示），拆解实施步骤写入共享文档。
+- 本次完成：
+  1. 确认 Git 远程基线 `ea0722a` 已建立；
+  2. 在第 9 节将 PDF 解析最小闭环定案为 **方案 A**（独立解析接口 + 同步执行 + `pypdf` + `document_pages` 表 + 扫描件识别为 `failed` + 软删除重传自动恢复）；
+  3. 将开发任务拆解为 **Step 1（Model + Alembic 迁移）→ Step 2（Schema + Repository）→ Step 3（Parser Service + 软删除恢复）→ Step 4（API 路由 + Pytest 5 大场景测试）→ Step 5（前端详情页解析触发、逐页文本卡片与 `#page=N` 跳页联动）** 共 5 个可独立验证的步骤。
+- 修改文件：`docs/AI_COLLABORATION.md`
+- 验证命令与结果：`git status --short`、`git log -n 3 --oneline` 确认基线已提交。
+- 已确认决策：采用方案 A 分 5 步推进 `v0.2` PDF 解析最小闭环。
+- 未解决问题或风险：无。
+- 建议下一步：按 Step 1 → Step 5 顺序逐步实现并验证（可由 Antigravity 或 Codex 执行）。
+- 需要用户决定：是由我现在开始按 Step 1 → Step 5 逐步实现（每完成一步或后端+前端两阶段向你汇报），还是交由 Codex 执行？
+
+### 2026-10-27 18:05 - Antigravity → 用户 & Codex：PDF 解析最小闭环方案审查与替代方案对比
+
+- 状态：`DECISION_NEEDED`
+- 用户目标：审查第 9 节“独立解析接口 + 同步执行 + pypdf + document_pages 表”基准方案，对比最多两套替代方案与取舍，明确各高级模块（OCR、表格/图片、Embedding、向量检索、RAG、Redis/Celery、多 Agent）的协作全景。
+- 本次完成：
+  1. **方案 A（推荐基准方案：独立接口 `POST /documents/{id}/parse` + 同步执行 + `pypdf` + `document_pages` 表）审查结论**：
+     - **架构合理性高**：将“文件上传（I/O 密集）”与“文本解析（CPU 密集）”解耦，避免上传接口因解析异常或耗时而回滚；先落盘 `document_pages`（页级原始文本事实层），后续在 V3.2/V4 调整切块（Chunking）窗口大小时可直接从数据库重切，无需反复重读磁盘 PDF。
+     - **针对第 9 节 6 个具体问题的推荐定案**：
+       1. **触发方式**：独立 `POST /api/v1/documents/{id}/parse` 接口（同时提供 `GET /api/v1/documents/{id}/pages` 查看解析结果），支持幂等重跑（重跑时清理或覆盖该文档旧页面记录）。
+       2. **同步/异步边界**：第一版在 Service 层同步执行并返回解析统计摘要；Service 接口保持纯净输入输出（传入 `document_id`，更新状态机 `uploaded -> processing -> ready/failed`），未来引入 Celery 时仅需将路由内的同步调用替换为异步任务投递。
+       3. **`document_pages` 字段设计**：`id (UUID)`、`document_id (FK)`、`page_number (int, >=1)`、`text (Text)`、`char_count (int)`、`status (str: 'ready' | 'empty' | 'failed')`、`error_message (str | None)`、`created_at`、`updated_at`，并建联合唯一约束 `UNIQUE(document_id, page_number)`。
+       4. **单页无文本与整篇扫描件状态**：单页提取去除空白后 `char_count == 0` 记为页面 `status='empty'`（正常现象，如封面空白或全图页）；若**整篇文档所有页**有效字符总数均为 0（典型纯图片扫描件），则将 `Document.status` 置为 `'failed'`（或新增提示说明“未检测到文本层，疑似扫描件，需后续 OCR 支持”），绝不伪装成空的 `'ready'`。
+       5. **第一版解析库选型**：优先使用已安装的 `pypdf`。理由：零新增二进制依赖、纯 Python 跨平台一致、单元测试构造内存 PDF 极简；待需要坐标框/双栏深度还原或复杂表格时，在解析层通过 Adapter 模式平替或增补 `PyMuPDF` / `pdfplumber` / `Docling`。
+       6. **软删除文档重复上传策略**：当 `POST /documents/upload` 的 `sha256` 命中已软删除记录（`deleted_at IS NOT NULL`）时，推荐**自动恢复原记录**（清空 `deleted_at = None`，更新 `updated_at` 及用户新传入的 `title`），避免用户删除某篇论文后永远被 `409 Conflict` 锁死无法重传。
+  2. **替代方案 B（上传即解析 + `PyMuPDF` + 直接切入 `document_chunks` 表）及取舍**：
+     - **做法**：在 `POST /documents/upload` 中直接用 `PyMuPDF` 抽文本并切块写入 `document_chunks`，不建 `document_pages` 表。
+     - **优点**：前端少一次点击；`PyMuPDF` 解析速度快且支持坐标块提取；少维护一张表。
+     - **放弃作为首版原因**：上传与解析强耦合，大文档或异常 PDF 会拖垮上传体验；跳过 `document_pages` 会丢失“按页对齐的原始全文快照”，后续每次实验不同 Chunk 大小都要重新解析原始 PDF。
+  3. **替代方案 C（独立接口 + `BackgroundTasks/Celery` 异步执行 + `pdfplumber/Docling` 一步到位提取文本与表格）及取舍**：
+     - **做法**：`POST /documents/{id}/parse` 返回 `202 Accepted`，后台异步调用重型解析器同时产出段落与表格，前端轮询状态。
+     - **优点**：接近最终生产形态，一步支持复杂排版与表格。
+     - **放弃作为首版原因**：第一版同时引入异步状态机轮询与重型解析依赖，调试链路过长，违反“先最小闭环、后引入复杂框架”的迭代原则。
+- 修改文件：`docs/AI_COLLABORATION.md`（未修改任何代码文件）。
+- 验证命令与结果：仅文档架构审查，未改动代码。
+- 已确认决策：维持最小闭环与分层演进原则。
+- 未解决问题或风险：Git 尚未进行首次提交；软删除恢复策略与方案 A 细节待用户最终拍板。
+- 建议下一步：用户确认采用方案 A（及第 9 节的 6 项细节定案）后，先做一次 Git 初始提交，再开始实现 `document_pages` 迁移与解析闭环。
+- 需要用户决定：是否批准采用**方案 A** 及其 6 项具体定案？
 
 ### 2026-10-27 00:15 - Codex & Antigravity → 用户：前端工作台改版收尾与内嵌 PDF 预览修复
 
