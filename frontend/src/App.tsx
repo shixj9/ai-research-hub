@@ -31,15 +31,29 @@ import {
   checkBackend,
   deleteDocument,
   documentFileUrl,
+  listDocumentChunks,
   listDocumentPages,
   listDocuments,
   parseDocument,
   uploadDocument,
 } from "./api";
-import type { DocumentPageListResponse, DocumentPageRecord, DocumentRecord } from "./types";
+import type {
+  DocumentChunkListResponse,
+  DocumentChunkRecord,
+  DocumentChunkType,
+  DocumentPageListResponse,
+  DocumentPageRecord,
+  DocumentRecord,
+} from "./types";
 
 type Page = "library" | "detail";
-type InspectorTab = "pages" | "meta";
+type InspectorTab = "chunks" | "pages" | "meta";
+
+const chunkTypeLabel: Record<DocumentChunkType, string> = {
+  text: "段落切块",
+  table: "表格 Key-Value",
+  image: "图片提取预留",
+};
 
 const statusLabel: Record<DocumentRecord["status"], string> = {
   uploaded: "待解析",
@@ -75,8 +89,11 @@ function App() {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [selected, setSelected] = useState<DocumentRecord | null>(null);
   const [page, setPage] = useState<Page>("library");
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("pages");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("chunks");
   const [pagesData, setPagesData] = useState<DocumentPageListResponse | null>(null);
+  const [chunksData, setChunksData] = useState<DocumentChunkListResponse | null>(null);
+  const [chunkFilter, setChunkFilter] = useState<DocumentChunkType | "all">("all");
+  const [chunkQuery, setChunkQuery] = useState("");
   const [pagesLoading, setPagesLoading] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [activePdfPage, setActivePdfPage] = useState<number>(1);
@@ -123,14 +140,31 @@ function App() {
   async function loadPagesForDocument(documentId: string) {
     setPagesLoading(true);
     try {
-      const result = await listDocumentPages(documentId);
-      setPagesData(result);
+      const [pagesResult, chunksResult] = await Promise.all([
+        listDocumentPages(documentId),
+        listDocumentChunks(documentId),
+      ]);
+      setPagesData(pagesResult);
+      setChunksData(chunksResult);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "无法读取页面解析结果");
     } finally {
       setPagesLoading(false);
     }
   }
+
+  const visibleChunks = useMemo<DocumentChunkRecord[]>(() => {
+    const all = chunksData?.items ?? [];
+    const byType =
+      chunkFilter === "all" ? all : all.filter((item) => item.chunk_type === chunkFilter);
+    const q = chunkQuery.trim().toLowerCase();
+    if (!q) return byType;
+    const terms = q.split(/\s+/).filter(Boolean);
+    return byType.filter((item) => {
+      const hay = `${item.title ?? ""}\n${item.content}`.toLowerCase();
+      return terms.some((t) => hay.includes(t));
+    });
+  }, [chunksData, chunkFilter, chunkQuery]);
 
   useEffect(() => {
     void checkBackend().then(setBackendOnline);
@@ -140,9 +174,12 @@ function App() {
   useEffect(() => {
     if (page === "detail" && selected) {
       setActivePdfPage(1);
+      setChunkFilter("all");
+      setChunkQuery("");
       void loadPagesForDocument(selected.id);
     } else {
       setPagesData(null);
+      setChunksData(null);
     }
   }, [page, selected?.id]);
 
@@ -164,7 +201,7 @@ function App() {
 
   function openDocument(document: DocumentRecord) {
     setSelected(document);
-    setInspectorTab("pages");
+    setInspectorTab("chunks");
     setPage("detail");
     setSidebarOpen(false);
   }
@@ -222,10 +259,10 @@ function App() {
       setSelected(result.document);
       await refreshDocuments();
       await loadPagesForDocument(document.id);
-      setInspectorTab("pages");
+      setInspectorTab("chunks");
       if (result.document.status === "ready") {
         setMessage(
-          `解析完成：共 ${result.total_pages} 页，提取 ${result.non_empty_pages} 页正文（${result.total_chars.toLocaleString()} 字符）`,
+          `解析完成：共 ${result.total_pages} 页，生成 ${result.total_chunks} 个切块（段落 ${result.text_chunks} / 表格 ${result.table_chunks} / 图片 ${result.image_chunks}）`,
         );
       } else {
         setError(result.document.parse_error ?? "未提取到有效正文");
@@ -442,6 +479,13 @@ function App() {
                         <span>
                           <strong>{document.title}</strong>
                           <small>{document.original_filename ?? "PDF 文档"}</small>
+                          {document.keywords && document.keywords.length > 0 && (
+                            <span className="row-keywords">
+                              {document.keywords.slice(0, 5).map((kw) => (
+                                <em key={kw} className="kw-chip">{kw}</em>
+                              ))}
+                            </span>
+                          )}
                         </span>
                       </button>
                       <span role="cell"><span className={`status-tag ${document.status}`}>{statusLabel[document.status]}</span></span>
@@ -480,12 +524,25 @@ function App() {
                   <button
                     role="tab"
                     type="button"
+                    aria-selected={inspectorTab === "chunks"}
+                    className={`inspector-tab ${inspectorTab === "chunks" ? "active" : ""}`}
+                    onClick={() => setInspectorTab("chunks")}
+                  >
+                    <Sparkles size={14} />
+                    <span>结构化切块</span>
+                    {chunksData && chunksData.total_chunks > 0 && (
+                      <span className="tab-badge">{chunksData.total_chunks}</span>
+                    )}
+                  </button>
+                  <button
+                    role="tab"
+                    type="button"
                     aria-selected={inspectorTab === "pages"}
                     className={`inspector-tab ${inspectorTab === "pages" ? "active" : ""}`}
                     onClick={() => setInspectorTab("pages")}
                   >
                     <BookOpen size={14} />
-                    <span>逐页正文</span>
+                    <span>逐页原文</span>
                     {pagesData && pagesData.total_pages > 0 && (
                       <span className="tab-badge">{pagesData.non_empty_pages}/{pagesData.total_pages}</span>
                     )}
@@ -498,11 +555,178 @@ function App() {
                     onClick={() => setInspectorTab("meta")}
                   >
                     <Info size={14} />
-                    <span>文档元数据</span>
+                    <span>元数据</span>
                   </button>
                 </div>
 
-                {inspectorTab === "pages" ? (
+                {inspectorTab === "chunks" ? (
+                  <div className="parsed-pages-panel">
+                    <div className="parse-summary-card">
+                      <div className="parse-summary-main">
+                        <strong>
+                          {selected.status === "ready"
+                            ? "已完成关键词、表格 Key-Value 与段落切块"
+                            : "尚未生成结构化切块"}
+                        </strong>
+                        <span>
+                          {chunksData && chunksData.total_chunks > 0
+                            ? `共 ${chunksData.total_chunks} 块：段落 ${chunksData.text_chunks} · 表格 ${chunksData.table_chunks} · 图片 ${chunksData.image_chunks}`
+                            : "点击右侧按钮自动提取文档关键词、表格键值与完整段落切块"}
+                        </span>
+                      </div>
+                      <button
+                        className="primary-button"
+                        type="button"
+                        disabled={parsing}
+                        onClick={() => void handleParse(selected)}
+                      >
+                        {parsing ? (
+                          <><RefreshCw className="spin" size={14} /> 解析中</>
+                        ) : (
+                          <><Sparkles size={14} /> {selected.status === "ready" ? "重新解析" : "开始解析"}</>
+                        )}
+                      </button>
+                    </div>
+
+                    {(chunksData?.keywords?.length || selected.keywords?.length) ? (
+                      <div className="keywords-bar">
+                        <span className="keywords-label">文档核心关键词（点击筛选切块）：</span>
+                        <div className="keywords-list">
+                          {(chunksData?.keywords?.length ? chunksData.keywords : selected.keywords).map((kw) => {
+                            const active = chunkQuery.toLowerCase() === kw.toLowerCase();
+                            return (
+                              <button
+                                key={kw}
+                                type="button"
+                                className={`keyword-pill ${active ? "is-active" : ""}`}
+                                onClick={() => setChunkQuery(active ? "" : kw)}
+                              >
+                                #{kw}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="chunk-toolbar">
+                      <div className="chunk-filter-pills">
+                        <button
+                          type="button"
+                          className={`filter-pill ${chunkFilter === "all" ? "active" : ""}`}
+                          onClick={() => setChunkFilter("all")}
+                        >
+                          全部 ({chunksData?.total_chunks ?? 0})
+                        </button>
+                        <button
+                          type="button"
+                          className={`filter-pill ${chunkFilter === "text" ? "active" : ""}`}
+                          onClick={() => setChunkFilter("text")}
+                        >
+                          段落 ({chunksData?.text_chunks ?? 0})
+                        </button>
+                        <button
+                          type="button"
+                          className={`filter-pill ${chunkFilter === "table" ? "active" : ""}`}
+                          onClick={() => setChunkFilter("table")}
+                        >
+                          表格 KV ({chunksData?.table_chunks ?? 0})
+                        </button>
+                        <button
+                          type="button"
+                          className={`filter-pill ${chunkFilter === "image" ? "active" : ""}`}
+                          onClick={() => setChunkFilter("image")}
+                        >
+                          图片 ({chunksData?.image_chunks ?? 0})
+                        </button>
+                      </div>
+                      <label className="chunk-search-input">
+                        <Search size={14} />
+                        <input
+                          type="search"
+                          value={chunkQuery}
+                          onChange={(e) => setChunkQuery(e.target.value)}
+                          placeholder="输入问题或关键词过滤切块…"
+                        />
+                        {chunkQuery && (
+                          <button type="button" onClick={() => setChunkQuery("")} aria-label="清空过滤">
+                            <X size={13} />
+                          </button>
+                        )}
+                      </label>
+                    </div>
+
+                    {pagesLoading ? (
+                      <div className="state-panel compact">
+                        <RefreshCw className="spin" size={18} />
+                        <span>正在读取结构化切块…</span>
+                      </div>
+                    ) : visibleChunks.length === 0 ? (
+                      <div className="empty-pages-hint">
+                        <Sparkles size={24} />
+                        <strong>{chunksData?.total_chunks ? "没有匹配当前筛选条件的切块" : "暂无结构化切块"}</strong>
+                        <p>{chunksData?.total_chunks ? "请切换分类或清空搜索词。" : "点击上方“开始解析”，系统将自动提取关键词、表格 Key-Value、完整段落与内嵌图片。"}</p>
+                      </div>
+                    ) : (
+                      <div className="page-card-list">
+                        {visibleChunks.map((chunk) => (
+                          <article
+                            key={chunk.id}
+                            className={`page-card chunk-card chunk-${chunk.chunk_type} ${activePdfPage === chunk.page_number ? "is-active" : ""}`}
+                          >
+                            <header className="page-card-header">
+                              <button
+                                type="button"
+                                className="page-jump-button"
+                                onClick={() => setActivePdfPage(chunk.page_number)}
+                                title={`左侧 PDF 跳转到第 ${chunk.page_number} 页`}
+                              >
+                                <strong>第 {chunk.page_number} 页 · #{chunk.chunk_index + 1}</strong>
+                                <span>跳转预览</span>
+                              </button>
+                              <div className="page-card-meta">
+                                <span>{chunk.char_count.toLocaleString()} 字符</span>
+                                <span className={`chunk-type-badge ${chunk.chunk_type}`}>
+                                  {chunkTypeLabel[chunk.chunk_type]}
+                                </span>
+                              </div>
+                            </header>
+                            {chunk.title && <div className="chunk-card-title">{chunk.title}</div>}
+
+                            {chunk.chunk_type === "table" && chunk.meta.rows ? (
+                              <div className="kv-table-list">
+                                {chunk.meta.rows.map((row, rIdx) => (
+                                  <div key={rIdx} className="kv-table-row">
+                                    {row.map((pair, cIdx) => (
+                                      <div key={cIdx} className="kv-pair-item">
+                                        <span className="kv-key">{pair.key}</span>
+                                        <span className="kv-val">{pair.value}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : chunk.chunk_type === "image" ? (
+                              <div className="image-chunk-body">
+                                {chunk.meta.image_url && (
+                                  <img
+                                    src={chunk.meta.image_url}
+                                    alt={chunk.title ?? "PDF 内嵌图片"}
+                                    className="extracted-figure-preview"
+                                    loading="lazy"
+                                  />
+                                )}
+                                <p className="page-card-text">{chunk.content}</p>
+                              </div>
+                            ) : (
+                              <pre className="page-card-text">{chunk.content}</pre>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : inspectorTab === "pages" ? (
                   <div className="parsed-pages-panel">
                     <div className="parse-summary-card">
                       <div className="parse-summary-main">

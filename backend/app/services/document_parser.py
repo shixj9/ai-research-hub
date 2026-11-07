@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pdfplumber
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 from sqlalchemy.orm import Session
@@ -7,6 +8,10 @@ from sqlalchemy.orm import Session
 from backend.app.models.document import Document
 from backend.app.repositories.document import DocumentRepository
 from backend.app.schemas.document import (
+    DocumentChunkCreate,
+    DocumentChunkListResponse,
+    DocumentChunkResponse,
+    DocumentChunkType,
     DocumentPageCreate,
     DocumentPageListResponse,
     DocumentPageResponse,
@@ -14,6 +19,12 @@ from backend.app.schemas.document import (
     DocumentParseResponse,
     DocumentResponse,
     DocumentStatus,
+)
+from backend.app.services.document_chunker import (
+    build_text_chunks_for_page,
+    extract_document_keywords,
+    extract_image_chunks_for_page,
+    extract_table_chunks_for_page,
 )
 
 SCANNED_PDF_ERROR_MESSAGE = (
@@ -36,7 +47,6 @@ class UnreadablePdfParseError(DocumentParseError):
 def _normalize_page_text(raw_text: str | None) -> str:
     if not raw_text:
         return ""
-    # PostgreSQL TEXT columns forbid NUL (0x00) bytes that some PDF fonts emit.
     without_nul = raw_text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
     return without_nul.strip()
 
@@ -89,32 +99,73 @@ def parse_pdf_document(
         raise UnreadablePdfParseError("The PDF contains no pages")
 
     parsed_pages: list[DocumentPageCreate] = []
-    for page_number, page in enumerate(raw_pages, start=1):
-        try:
-            cleaned_text = _normalize_page_text(page.extract_text())
-            char_count = len(cleaned_text)
-            page_status = (
-                DocumentPageStatus.READY if char_count > 0 else DocumentPageStatus.EMPTY
-            )
-            parsed_pages.append(
-                DocumentPageCreate(
-                    page_number=page_number,
-                    text=cleaned_text,
-                    char_count=char_count,
-                    status=page_status,
-                    error_message=None,
+    all_chunks: list[DocumentChunkCreate] = []
+    all_table_terms: list[str] = []
+
+    plumber_pdf = None
+    try:
+        plumber_pdf = pdfplumber.open(file_path)
+    except Exception:
+        plumber_pdf = None
+
+    try:
+        for page_number, page in enumerate(raw_pages, start=1):
+            cleaned_text = ""
+            try:
+                cleaned_text = _normalize_page_text(page.extract_text())
+                char_count = len(cleaned_text)
+                page_status = (
+                    DocumentPageStatus.READY if char_count > 0 else DocumentPageStatus.EMPTY
                 )
-            )
-        except Exception as exc:
-            parsed_pages.append(
-                DocumentPageCreate(
-                    page_number=page_number,
-                    text="",
-                    char_count=0,
-                    status=DocumentPageStatus.FAILED,
-                    error_message=f"单页文本提取失败: {exc}"[:500],
+                parsed_pages.append(
+                    DocumentPageCreate(
+                        page_number=page_number,
+                        text=cleaned_text,
+                        char_count=char_count,
+                        status=page_status,
+                        error_message=None,
+                    )
                 )
+            except Exception as exc:
+                parsed_pages.append(
+                    DocumentPageCreate(
+                        page_number=page_number,
+                        text="",
+                        char_count=0,
+                        status=DocumentPageStatus.FAILED,
+                        error_message=f"单页文本提取失败: {exc}"[:500],
+                    )
+                )
+
+            if plumber_pdf is not None and page_number <= len(plumber_pdf.pages):
+                table_chunks, table_terms = extract_table_chunks_for_page(
+                    plumber_pdf.pages[page_number - 1],
+                    page_number,
+                    start_index=len(all_chunks),
+                )
+                all_chunks.extend(table_chunks)
+                all_table_terms.extend(table_terms)
+
+            if cleaned_text:
+                text_chunks = build_text_chunks_for_page(
+                    page_number,
+                    cleaned_text,
+                    start_index=len(all_chunks),
+                )
+                all_chunks.extend(text_chunks)
+
+            image_chunks = extract_image_chunks_for_page(
+                page,
+                page_number,
+                document_id=document.id,
+                page_text=cleaned_text,
+                storage_root=storage_root,
+                start_index=len(all_chunks),
             )
+            all_chunks.extend(image_chunks)
+    finally:
+        if plumber_pdf is not None:
+            plumber_pdf.close()
 
     total_pages = len(parsed_pages)
     non_empty_pages = sum(
@@ -128,7 +179,13 @@ def parse_pdf_document(
     )
     total_chars = sum(page.char_count for page in parsed_pages)
 
-    if non_empty_pages == 0:
+    keywords = extract_document_keywords(
+        document.title,
+        [p.text for p in parsed_pages if p.text],
+        table_values=all_table_terms,
+    )
+
+    if non_empty_pages == 0 and not all_chunks:
         document_status = DocumentStatus.FAILED
         parse_error = (
             "所有页面文本提取均报错"
@@ -143,10 +200,16 @@ def parse_pdf_document(
         db,
         document,
         parsed_pages,
+        chunks=all_chunks,
+        keywords=keywords,
         status=document_status,
         parse_error=parse_error,
         page_count=total_pages,
     )
+
+    text_chunks_count = sum(1 for c in all_chunks if c.chunk_type == DocumentChunkType.TEXT)
+    table_chunks_count = sum(1 for c in all_chunks if c.chunk_type == DocumentChunkType.TABLE)
+    image_chunks_count = sum(1 for c in all_chunks if c.chunk_type == DocumentChunkType.IMAGE)
 
     return DocumentParseResponse(
         document=DocumentResponse.model_validate(document),
@@ -155,6 +218,11 @@ def parse_pdf_document(
         empty_pages=empty_pages,
         failed_pages=failed_pages,
         total_chars=total_chars,
+        keywords=keywords,
+        total_chunks=len(all_chunks),
+        text_chunks=text_chunks_count,
+        table_chunks=table_chunks_count,
+        image_chunks=image_chunks_count,
     )
 
 
@@ -174,5 +242,35 @@ def list_document_pages(db: Session, document: Document) -> DocumentPageListResp
         total_pages=len(items),
         non_empty_pages=non_empty_pages,
         total_chars=total_chars,
+        items=items,
+    )
+
+
+def list_document_chunks(
+    db: Session,
+    document: Document,
+    *,
+    chunk_type: DocumentChunkType | None = None,
+) -> DocumentChunkListResponse:
+    all_chunks = DocumentRepository.list_chunks(db, document.id)
+    filtered = (
+        [c for c in all_chunks if c.chunk_type == chunk_type.value]
+        if chunk_type is not None
+        else all_chunks
+    )
+    items = [DocumentChunkResponse.model_validate(chunk) for chunk in filtered]
+    text_count = sum(1 for c in all_chunks if c.chunk_type == DocumentChunkType.TEXT.value)
+    table_count = sum(1 for c in all_chunks if c.chunk_type == DocumentChunkType.TABLE.value)
+    image_count = sum(1 for c in all_chunks if c.chunk_type == DocumentChunkType.IMAGE.value)
+
+    return DocumentChunkListResponse(
+        document_id=document.id,
+        document_status=DocumentStatus(document.status),
+        parsed_at=document.parsed_at,
+        keywords=document.keywords,
+        total_chunks=len(all_chunks),
+        text_chunks=text_count,
+        table_chunks=table_count,
+        image_chunks=image_count,
         items=items,
     )

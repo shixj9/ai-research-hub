@@ -60,8 +60,9 @@ Schema 不是数据库表；它定义 API 允许客户端看到或提交的字�
 
 SQLAlchemy 数据模型，对应真实数据库表。
 
-- `models/document.py`：对应 PostgreSQL 的 `documents` 表。
+- `models/document.py`：对应 PostgreSQL 的 `documents` 表（含 `keywords_json` 文档关键词）。
 - `models/document_page.py`：对应 PostgreSQL 的 `document_pages` 表（保存逐页提取文本、字符数与单页状态）。
+- `models/document_chunk.py`：对应 PostgreSQL 的 `document_chunks` 表（保存段落、表格 Key-Value、图片三类结构化切块及 `metadata_json`）。
 
 Model 可以包含数据库约束、字段类型、索引和默认值。客户端不能直接控制 Model。
 
@@ -78,7 +79,8 @@ Model 可以包含数据库约束、字段类型、索引和默认值。客户�
 跨越多个基础设施的业务工作流。
 
 - `services/document_upload.py`：流式接收 PDF、限制大小、验证格式、计算 SHA-256、提取页数、移动文件并创建/恢复数据库记录。
-- `services/document_parser.py`：读取本地存储的 PDF，使用 `pypdf` 逐页提取文本、清理空字节、识别空白页与纯扫描件，并将分页文本写入 `document_pages` 表。
+- `services/document_parser.py`：读取本地存储的 PDF，使用 `pypdf` 逐页提取文本、清理空字节、识别空白页与纯扫描件，并调用结构化切块管线将 `document_pages`、`document_chunks` 与文档关键词原子写入数据库。
+- `services/document_chunker.py`：执行文档代表性关键词提取、跨行连字符缝合与完整自然段切块、`pdfplumber` 表格提取与 Key-Value 绑定（过滤非空率 `<50%` 的伪表格）、PDF 内嵌图片提取落盘（`storage/dev/figures/<doc_id>/`）及关键词检索打分。
 
 上传服务同时协调文件系统、PDF 解析器和 Repository，因此不能放进单纯的 API 或数据库访问层。
 

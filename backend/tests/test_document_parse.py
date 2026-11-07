@@ -194,3 +194,87 @@ def test_parse_document_without_stored_file_returns_404(client: ApiClient) -> No
     assert parse_resp.status_code == 404
     assert "no stored file" in parse_resp.json()["detail"].lower()
 
+
+
+def test_parse_extracts_keywords_and_chunks_and_supports_search(
+    client: ApiClient,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    configure_storage(monkeypatch, tmp_path)
+    pdf_bytes = make_pdf_with_pages(
+        [
+            "Transformer Architecture and Self-Attention mechanism for neural translation.",
+            "FastAPI and PostgreSQL backend pipeline with RAG chunking.",
+        ]
+    )
+
+    upload_resp = client.post(
+        "/api/v1/documents/upload",
+        data={"title": "Transformer RAG Pipeline"},
+        files={"file": ("transformer-rag.pdf", pdf_bytes, "application/pdf")},
+    )
+    assert upload_resp.status_code == 201
+    doc_id = upload_resp.json()["id"]
+
+    parse_resp = client.post(f"/api/v1/documents/{doc_id}/parse")
+    assert parse_resp.status_code == 200
+    parsed = parse_resp.json()
+    assert len(parsed["keywords"]) >= 2
+    assert parsed["total_chunks"] >= 2
+    assert parsed["text_chunks"] >= 2
+
+    chunks_resp = client.get(f"/api/v1/documents/{doc_id}/chunks")
+    assert chunks_resp.status_code == 200
+    chunks_data = chunks_resp.json()
+    assert chunks_data["total_chunks"] == parsed["total_chunks"]
+    assert len(chunks_data["items"]) >= 2
+
+    search_resp = client.get(
+        "/api/v1/documents/search",
+        params={"q": "FastAPI PostgreSQL", "document_id": doc_id},
+    )
+    assert search_resp.status_code == 200
+    search_data = search_resp.json()
+    assert search_data["total"] >= 1
+    assert search_data["items"][0]["chunk"]["page_number"] == 2
+    assert "FastAPI" in search_data["items"][0]["matched_keywords"]
+
+
+def test_table_key_value_binding_and_sparse_table_filtering() -> None:
+    from backend.app.services.document_chunker import (
+        clean_page_paragraphs,
+        extract_table_chunks_for_page,
+    )
+
+    class DummyPlumberPage:
+        def extract_tables(self):
+            return [
+                [
+                    ["阶段", "建议时间", "核心内容"],
+                    ["第一阶段", "第1-30天", "Python 与 FastAPI 基础"],
+                    ["第二阶段", "第31-60天", "RAG 与 Tool Calling"],
+                ],
+                [
+                    ["", None, "", None],
+                    [None, "x", "", None],
+                ],
+            ]
+
+    chunks, terms = extract_table_chunks_for_page(
+        DummyPlumberPage(),
+        page_number=2,
+        start_index=0,
+    )
+    assert len(chunks) == 1
+    table_chunk = chunks[0]
+    assert table_chunk.chunk_type.value == "table"
+    expected_row = "阶段: 第一阶段 | 建议时间: 第1-30天 | 核心内容: Python 与 FastAPI 基础"
+    assert expected_row in table_chunk.content
+    assert table_chunk.meta["headers"] == ["阶段", "建议时间", "核心内容"]
+    assert table_chunk.meta["row_count"] == 2
+    assert "FastAPI" in " ".join(terms)
+
+    sample_raw = "This is a trans-\nformer model.\n\n1. Introduction\nWe propose RAG."
+    paragraphs = clean_page_paragraphs(sample_raw)
+    assert "This is a transformer model." in paragraphs[0]

@@ -1,4 +1,7 @@
 import type {
+  ChunkSearchResponse,
+  DocumentChunkListResponse,
+  DocumentChunkType,
   DocumentListResponse,
   DocumentPageListResponse,
   DocumentParseResponse,
@@ -59,6 +62,25 @@ export function parseDocument(documentId: string): Promise<DocumentParseResponse
 
 export function listDocumentPages(documentId: string): Promise<DocumentPageListResponse> {
   return request<DocumentPageListResponse>(`/documents/${documentId}/pages`);
+}
+
+export function listDocumentChunks(
+  documentId: string,
+  chunkType?: DocumentChunkType,
+): Promise<DocumentChunkListResponse> {
+  const query = chunkType ? `?chunk_type=${encodeURIComponent(chunkType)}` : "";
+  return request<DocumentChunkListResponse>(`/documents/${documentId}/chunks${query}`);
+}
+
+export function searchDocumentChunks(
+  q: string,
+  documentId?: string,
+  chunkType?: DocumentChunkType,
+): Promise<ChunkSearchResponse> {
+  const params = new URLSearchParams({ q });
+  if (documentId) params.set("document_id", documentId);
+  if (chunkType) params.set("chunk_type", chunkType);
+  return request<ChunkSearchResponse>(`/documents/search?${params.toString()}`);
 }
 
 export function documentFileUrl(documentId: string, pageNumber?: number): string {

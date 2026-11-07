@@ -2,7 +2,7 @@
 
 面向个人研究者的 AI 智能文档理解与研究分析平台。
 
-当前里程碑是 `v0.2` 文档接入与逐页解析闭环：React 工作台前端、FastAPI 本地开发 HTTPS、PostgreSQL、SQLAlchemy、Alembic、PDF 上传、文档 CRUD 以及 PDF 逐页文本提取与页码联动预览。
+当前里程碑是 `v0.3` 结构化切块与多模态提取闭环：React 工作台前端、FastAPI 本地开发 HTTPS、PostgreSQL、SQLAlchemy、Alembic、PDF 上传、文档 CRUD、PDF 逐页文本提取、完整段落切块、关键词自动提取、表格 Key-Value 绑定、内嵌图片提取预览及关键词切块检索。
 
 ## 本地启动后端
 
@@ -55,8 +55,11 @@ npm run dev
 | `GET` | `/api/v1/documents` | 分页列出文档 |
 | `GET` | `/api/v1/documents/{id}` | 查询单篇文档 |
 | `GET` | `/api/v1/documents/{id}/file` | 在浏览器中打开原始 PDF |
-| `POST` | `/api/v1/documents/{id}/parse` | 触发 PDF 逐页文本解析并落盘 |
+| `POST` | `/api/v1/documents/{id}/parse` | 触发 PDF 逐页文本解析、结构化切块、关键词与表格/图片提取 |
 | `GET` | `/api/v1/documents/{id}/pages` | 获取文档的逐页解析文本与统计 |
+| `GET` | `/api/v1/documents/{id}/chunks` | 获取文档的结构化切块（支持按类型 `text`/`table`/`image` 与关键词过滤） |
+| `GET` | `/api/v1/documents/{id}/figures/{name}` | 获取解析提取出的 PDF 内嵌图片 |
+| `GET` | `/api/v1/documents/search` | 按问题/关键词检索文档切块 |
 | `PATCH` | `/api/v1/documents/{id}` | 更新文档字段 |
 | `DELETE` | `/api/v1/documents/{id}` | 软删除文档 |
 

@@ -2,9 +2,9 @@
 
 本文件用于用户、Codex 与 Antigravity 在同一项目中共享事实、决策、任务状态和交接信息。开始新的项目任务前应先阅读本文件，但它不覆盖用户的最新指令、项目 `AGENTS.md` 或安全规则。
 
-最后审计时间：2026-10-27  
-当前版本：`v0.2` 文档接入与逐页解析闭环  
-当前阶段结论：基础设施、PDF 上传、文档管理与 PDF 逐页文本提取闭环（`document_pages` + 前端详情页逐页对照与跳页）已经可用；文本切块、检索与 AI 分析尚未开始。
+最后审计时间：2026-11-07  
+当前版本：`v0.3` 结构化切块、关键词提取、表格 KV 与图片预览闭环  
+当前阶段结论：基础设施、PDF 上传、文档管理、PDF 逐页解析（`document_pages`）、结构化切块（`document_chunks`：完整自然段 + `pdfplumber` 表格 Key-Value + 内嵌图片落盘与预留）、文档关键词提取、关键词切块检索及前端可视化已全部可用；OCR、向量检索（`pgvector`）与 RAG 问答尚未开始。
 
 ## 1. 共同目标
 
@@ -92,9 +92,10 @@ Service 业务流程
 | 文件去重与内容寻址 | 已完成 | SHA-256 唯一约束和哈希路径 |
 | 原始 PDF 在线读取 | 已完成 | `GET /documents/{id}/file`（支持 `SAMEORIGIN` 页内预览与 `#page=N` 跳页） |
 | PDF 逐页正文提取与持久化 | 已完成 | `POST /documents/{id}/parse`、`GET /documents/{id}/pages`、`document_pages` 表与扫描件识别 |
-| 基础前端（中性工作台） | 已完成 | 侧边栏导航、表格化文档库、搜索过滤、弹窗上传、分栏详情、内嵌 PDF 预览与逐页正文卡片联动 |
+| 结构化切块与多模态提取 (`v0.3`) | 已完成 | `document_chunks` 表（自然段 + `pdfplumber` 表格 Key-Value + 内嵌图片提取预留）、文档关键词自动提取、`GET /documents/{id}/chunks`、`GET /documents/{id}/figures/{name}`、`GET /documents/search` |
+| 基础前端（中性工作台） | 已完成 | 侧边栏导航、表格化文档库、搜索过滤、弹窗上传、分栏详情、内嵌 PDF 预览、逐页正文卡片与结构化切块（段落/表格 KV/图片/关键词筛选）联动 |
 | 本地 HTTPS | 已完成 | 自签名证书脚本和 FastAPI HTTPS 启动脚本 |
-| 自动测试 | 已完成基础覆盖 | 14 项后端测试通过（含上传、CRUD、内联预览、多页解析、空白页、扫描件失败、幂等重跑与软删除恢复） |
+| 自动测试 | 已完成基础覆盖 | 16 项后端测试通过（含上传、CRUD、内联预览、多页解析、空白页、扫描件失败、幂等重跑、软删除恢复、结构化切块与关键词检索） |
 | 前端构建验证 | 已完成 | TypeScript 与 Vite 生产构建通过 |
 | 项目与目录说明 | 已完成基础版本 | `README.md`、`PROJECT_STRUCTURE.md` |
 
@@ -102,10 +103,8 @@ Service 业务流程
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
-| 文本切块 | 未开始 | 已有 `document_pages` 逐页原文，尚无 `document_chunks` 表和切块策略 |
-| OCR | 未开始 | 扫描件暂时无法提取文字 |
-| 表格与图片解析 | 未开始 | 尚未选型和定义结果结构 |
-| 全文检索 | 未开始 | 无关键词索引和检索接口 |
+| OCR | 未开始 | 扫描件及内嵌图片 OCR/VLM 描述字段已预留，尚未接入 OCR 引擎 |
+| 全文索引加速 | 基础可用 | 已支持关键词检索与打分（`GET /documents/search`），尚未接入 PostgreSQL GIN/tsvector 全文索引 |
 | 向量检索 | 未开始 | pgvector 镜像已使用，但扩展和向量表尚未接入 |
 | RAG 问答与引用溯源 | 未开始 | 无 embedding、检索上下文和引用模型 |
 | 结构化研究分析 | 未开始 | 无分析模板和结果表 |
@@ -241,6 +240,19 @@ Service 业务流程
 - 重大方案存在分歧时并列理由，交给用户决定，不通过相互覆盖代码解决。
 
 ## 13. 最近通信记录
+
+### 2026-11-02 13:14 - Antigravity → 用户 & Codex：完成 v0.3 文档关键词自动提取 + 表格 Key-Value 绑定 + 完整段落切块 + 图片预留与前端可视化
+
+- 状态：`DONE`
+- 用户目标：实现自动列出文档关键词、表格 Key-Value 绑定、完整段落切块与图片提取预留，并在前端可视化展示结果。
+- 本次完成：
+  1. **Step 1（模型与迁移）**：在 `Document` 新增 `keywords_json` 字段与 `keywords` 属性；新建 `DocumentChunk` 模型（`document_chunks` 表，支持 `text` | `table` | `image` 三类切块及 JSON 元数据）；编写并执行迁移 `20261101_0004_add_document_chunks_and_keywords.py`。
+  2. **Step 2（Schema 与 Repository）**：新增 `DocumentChunkCreate`、`DocumentChunkResponse`、`DocumentChunkListResponse`、`ChunkSearchHit`、`ChunkSearchResponse`；在 `DocumentRepository` 实现切块与关键词原子替换及按类型/关键词查询。
+  3. **Step 3（核心结构化切块管线）**：新建 `backend/app/services/document_chunker.py` 并集成至 `document_parser.py`，实现代表性关键词提取、跨行连字符缝合与完整段落优先切块、`pdfplumber` 表格 Key-Value 绑定（过滤非空率 `<50%` 的伪表格）、内嵌图片存盘（`storage/dev/figures/<doc_id>/`）与 OCR/VLM 预留字段、以及问题关键词检索打分。
+  4. **Step 4（API 路由与测试）**：在 `backend/app/api/routes/documents.py` 新增 `GET /documents/{id}/chunks`、`GET /documents/{id}/figures/{name}`、`GET /documents/search`；新增单元测试，16 项 `pytest` 全部通过，并对本地两份真实 PDF 完成实测验证。
+  5. **Step 5（前端可视化）**：更新 `frontend/src/types.ts`、`api.ts`、`App.tsx`、`styles.css`，新增「结构化切块」面板、文档关键词点击筛选条、切块分类过滤（全部/段落/表格 KV/图片）、表格 Key-Value 键值卡片与提取图片缩略图预览。
+- 验证命令与结果：`uv run pytest`（16 passed in 0.53s）、`npm --prefix frontend run build`（通过）。
+- 建议下一步：启动 Docker Desktop 与前后端服务，在详情页点击「重新解析」体验关键词、表格 Key-Value、段落切块与图片提取可视化效果。
 
 ### 2026-10-27 19:36 - Antigravity → 用户 & Codex：完成 PDF 解析最小闭环（v0.2）全栈实现与验证
 

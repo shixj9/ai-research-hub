@@ -1,7 +1,8 @@
+import json
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, String, Uuid, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, String, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.db.base import Base
@@ -27,6 +28,7 @@ class Document(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="uploaded")
     parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     parse_error: Mapped[str | None] = mapped_column(String(500))
+    keywords_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -39,3 +41,16 @@ class Document(Base):
         onupdate=func.now(),
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+    @property
+    def keywords(self) -> list[str]:
+        if not self.keywords_json:
+            return []
+        try:
+            loaded = json.loads(self.keywords_json)
+            if isinstance(loaded, list):
+                return [str(item) for item in loaded if str(item).strip()]
+        except ValueError:
+            return []
+        return []
+

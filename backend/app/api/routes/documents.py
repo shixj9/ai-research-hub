@@ -21,6 +21,9 @@ from backend.app.db.session import get_db
 from backend.app.models.document import Document
 from backend.app.repositories.document import DocumentRepository
 from backend.app.schemas.document import (
+    ChunkSearchResponse,
+    DocumentChunkListResponse,
+    DocumentChunkType,
     DocumentCreate,
     DocumentListResponse,
     DocumentPageListResponse,
@@ -28,9 +31,11 @@ from backend.app.schemas.document import (
     DocumentResponse,
     DocumentUpdate,
 )
+from backend.app.services.document_chunker import search_document_chunks
 from backend.app.services.document_parser import (
     DocumentFileMissingError,
     UnreadablePdfParseError,
+    list_document_chunks,
     list_document_pages,
     parse_pdf_document,
 )
@@ -112,6 +117,22 @@ def list_documents(
     return DocumentListResponse(items=items, total=total, offset=offset, limit=limit)
 
 
+@router.get("/search", response_model=ChunkSearchResponse)
+def search_chunks(
+    db: DatabaseSession,
+    q: Annotated[str, Query(min_length=1, max_length=200)],
+    document_id: Annotated[UUID | None, Query()] = None,
+    chunk_type: Annotated[DocumentChunkType | None, Query()] = None,
+) -> ChunkSearchResponse:
+    return search_document_chunks(
+        db,
+        q,
+        document_id=document_id,
+        chunk_type=chunk_type,
+    )
+
+
+
 @router.get("/{document_id}", response_model=DocumentResponse)
 def get_document(document_id: UUID, db: DatabaseSession) -> Document:
     return _get_document_or_404(db, document_id)
@@ -163,6 +184,34 @@ def parse_document(document_id: UUID, db: DatabaseSession) -> DocumentParseRespo
 def get_document_pages(document_id: UUID, db: DatabaseSession) -> DocumentPageListResponse:
     document = _get_document_or_404(db, document_id)
     return list_document_pages(db, document)
+
+
+@router.get("/{document_id}/chunks", response_model=DocumentChunkListResponse)
+def get_document_chunks(
+    document_id: UUID,
+    db: DatabaseSession,
+    chunk_type: Annotated[DocumentChunkType | None, Query()] = None,
+) -> DocumentChunkListResponse:
+    document = _get_document_or_404(db, document_id)
+    return list_document_chunks(db, document, chunk_type=chunk_type)
+
+
+@router.get("/{document_id}/figures/{figure_name}", response_class=FileResponse)
+def open_document_figure(
+    document_id: UUID,
+    figure_name: str,
+    db: DatabaseSession,
+) -> FileResponse:
+    _get_document_or_404(db, document_id)
+    figures_root = (settings.storage_root.resolve() / "figures" / str(document_id)).resolve()
+    file_path = (figures_root / figure_name).resolve()
+    if not file_path.is_relative_to(figures_root) or not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Figure not found",
+        )
+    return FileResponse(file_path, media_type="image/png", content_disposition_type="inline")
+
 
 
 @router.patch("/{document_id}", response_model=DocumentResponse)
