@@ -26,6 +26,7 @@ from backend.app.services.document_chunker import (
     extract_image_chunks_for_page,
     extract_table_chunks_for_page,
 )
+from backend.app.services.embedding_service import embed_texts
 
 SCANNED_PDF_ERROR_MESSAGE = (
     "未检测到可提取的文本层（疑似扫描版或纯图片 PDF，后续需通过 OCR 解析）"
@@ -196,6 +197,16 @@ def parse_pdf_document(
         document_status = DocumentStatus.READY
         parse_error = None
 
+    embedding_model_label: str | None = None
+    embedded_chunks_count = 0
+    if all_chunks:
+        chunk_texts = [f"{c.title or ''}\n{c.content}".strip() for c in all_chunks]
+        vectors, embedding_model_label = embed_texts(chunk_texts)
+        for chunk_item, vec in zip(all_chunks, vectors, strict=False):
+            chunk_item.embedding = vec
+            chunk_item.embedding_model = embedding_model_label
+            embedded_chunks_count += 1
+
     DocumentRepository.replace_pages(
         db,
         document,
@@ -223,6 +234,8 @@ def parse_pdf_document(
         text_chunks=text_chunks_count,
         table_chunks=table_chunks_count,
         image_chunks=image_chunks_count,
+        embedded_chunks=embedded_chunks_count,
+        embedding_model=embedding_model_label,
     )
 
 
@@ -262,6 +275,8 @@ def list_document_chunks(
     text_count = sum(1 for c in all_chunks if c.chunk_type == DocumentChunkType.TEXT.value)
     table_count = sum(1 for c in all_chunks if c.chunk_type == DocumentChunkType.TABLE.value)
     image_count = sum(1 for c in all_chunks if c.chunk_type == DocumentChunkType.IMAGE.value)
+    embedded_count = sum(1 for c in all_chunks if c.has_embedding)
+    emb_model = next((c.embedding_model for c in all_chunks if c.embedding_model), None)
 
     return DocumentChunkListResponse(
         document_id=document.id,
@@ -272,5 +287,7 @@ def list_document_chunks(
         text_chunks=text_count,
         table_chunks=table_count,
         image_chunks=image_count,
+        embedded_chunks=embedded_count,
+        embedding_model=emb_model,
         items=items,
     )

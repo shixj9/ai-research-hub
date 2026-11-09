@@ -28,26 +28,34 @@ import {
   X,
 } from "lucide-react";
 import {
+  askDocumentQuestion,
   checkBackend,
   deleteDocument,
   documentFileUrl,
+  getAIConfig,
   listDocumentChunks,
   listDocumentPages,
   listDocuments,
   parseDocument,
+  searchDocumentChunks,
+  updateAIConfig,
   uploadDocument,
 } from "./api";
 import type {
+  AIConfigSummary,
+  ChunkSearchHit,
   DocumentChunkListResponse,
   DocumentChunkRecord,
   DocumentChunkType,
   DocumentPageListResponse,
   DocumentPageRecord,
   DocumentRecord,
+  RagAskResponse,
+  SearchMode,
 } from "./types";
 
 type Page = "library" | "detail";
-type InspectorTab = "chunks" | "pages" | "meta";
+type InspectorTab = "chunks" | "qa" | "pages" | "meta";
 
 const chunkTypeLabel: Record<DocumentChunkType, string> = {
   text: "段落切块",
@@ -94,6 +102,19 @@ function App() {
   const [chunksData, setChunksData] = useState<DocumentChunkListResponse | null>(null);
   const [chunkFilter, setChunkFilter] = useState<DocumentChunkType | "all">("all");
   const [chunkQuery, setChunkQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<SearchMode>("hybrid");
+  const [searchHits, setSearchHits] = useState<ChunkSearchHit[] | null>(null);
+  const [searchingChunks, setSearchingChunks] = useState(false);
+  const [aiConfig, setAiConfig] = useState<AIConfigSummary | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [cfgProvider, setCfgProvider] = useState("deepseek");
+  const [cfgModel, setCfgModel] = useState("deepseek-chat");
+  const [cfgBaseUrl, setCfgBaseUrl] = useState("https://api.deepseek.com/v1");
+  const [cfgApiKey, setCfgApiKey] = useState("");
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [qaQuestion, setQaQuestion] = useState("");
+  const [qaLoading, setQaLoading] = useState(false);
+  const [qaResult, setQaResult] = useState<RagAskResponse | null>(null);
   const [pagesLoading, setPagesLoading] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [activePdfPage, setActivePdfPage] = useState<number>(1);
@@ -153,35 +174,139 @@ function App() {
     }
   }
 
+  const hitMap = useMemo(() => {
+    const map = new Map<string, ChunkSearchHit>();
+    if (searchHits) {
+      for (const h of searchHits) map.set(h.chunk.id, h);
+    }
+    return map;
+  }, [searchHits]);
+
   const visibleChunks = useMemo<DocumentChunkRecord[]>(() => {
+    if (chunkQuery.trim() && searchHits !== null) {
+      const fromHits = searchHits.map((h) => h.chunk);
+      return chunkFilter === "all"
+        ? fromHits
+        : fromHits.filter((item) => item.chunk_type === chunkFilter);
+    }
     const all = chunksData?.items ?? [];
-    const byType =
-      chunkFilter === "all" ? all : all.filter((item) => item.chunk_type === chunkFilter);
-    const q = chunkQuery.trim().toLowerCase();
-    if (!q) return byType;
-    const terms = q.split(/\s+/).filter(Boolean);
-    return byType.filter((item) => {
-      const hay = `${item.title ?? ""}\n${item.content}`.toLowerCase();
-      return terms.some((t) => hay.includes(t));
-    });
-  }, [chunksData, chunkFilter, chunkQuery]);
+    return chunkFilter === "all" ? all : all.filter((item) => item.chunk_type === chunkFilter);
+  }, [chunksData, chunkFilter, chunkQuery, searchHits]);
 
   useEffect(() => {
     void checkBackend().then(setBackendOnline);
+    void getAIConfig()
+      .then((cfg) => {
+        setAiConfig(cfg);
+        setCfgProvider(cfg.active_llm);
+        setCfgModel(cfg.llm_model);
+        setCfgBaseUrl(cfg.llm_base_url);
+      })
+      .catch(() => null);
     void refreshDocuments();
   }, []);
+
+  function handleSelectProvider(providerKey: string) {
+    setCfgProvider(providerKey);
+    const preset = aiConfig?.llm_presets?.[providerKey];
+    if (preset) {
+      setCfgModel(preset.model);
+      setCfgBaseUrl(preset.base_url);
+    }
+    setCfgApiKey("");
+  }
+
+  async function handleSaveAIConfig() {
+    setSavingConfig(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const updated = await updateAIConfig({
+        active_llm: cfgProvider,
+        llm_model: cfgModel,
+        llm_base_url: cfgBaseUrl,
+        ...(cfgApiKey.trim() ? { llm_api_key: cfgApiKey.trim() } : {}),
+      });
+      setAiConfig(updated);
+      setCfgApiKey("");
+      setConfigOpen(false);
+      setMessage(
+        `模型配置已保存：${updated.active_llm} (${updated.llm_model}) · ${
+          updated.llm_api_configured ? "API Key 已就绪" : "未填 Key（使用离线证据模式）"
+        }`,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "保存模型配置失败");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
+
+  useEffect(() => {
+    const q = chunkQuery.trim();
+    if (!q || !selected) {
+      setSearchHits(null);
+      setSearchingChunks(false);
+      return;
+    }
+    let cancelled = false;
+    setSearchingChunks(true);
+    const timer = window.setTimeout(() => {
+      void searchDocumentChunks(q, {
+        documentId: selected.id,
+        chunkType: chunkFilter === "all" ? undefined : chunkFilter,
+        mode: searchMode,
+      })
+        .then((res) => {
+          if (!cancelled) setSearchHits(res.items);
+        })
+        .catch(() => {
+          if (!cancelled) setSearchHits([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearchingChunks(false);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [chunkQuery, selected?.id, chunkFilter, searchMode]);
 
   useEffect(() => {
     if (page === "detail" && selected) {
       setActivePdfPage(1);
       setChunkFilter("all");
       setChunkQuery("");
+      setQaQuestion("");
+      setQaResult(null);
       void loadPagesForDocument(selected.id);
     } else {
       setPagesData(null);
       setChunksData(null);
+      setQaResult(null);
     }
   }, [page, selected?.id]);
+
+  async function handleAskQuestion(customQuestion?: string) {
+    if (!selected) return;
+    const q = (customQuestion ?? qaQuestion).trim();
+    if (!q) return;
+    if (customQuestion) setQaQuestion(customQuestion);
+    setQaLoading(true);
+    setError(null);
+    try {
+      const res = await askDocumentQuestion(selected.id, q, searchMode, 4);
+      setQaResult(res);
+      if (res.citations.length > 0) {
+        setActivePdfPage(res.citations[0].page_number);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "RAG 问答请求失败");
+    } finally {
+      setQaLoading(false);
+    }
+  }
 
   useEffect(() => {
     function closeOnEscape(event: KeyboardEvent) {
@@ -537,6 +662,16 @@ function App() {
                   <button
                     role="tab"
                     type="button"
+                    aria-selected={inspectorTab === "qa"}
+                    className={`inspector-tab ${inspectorTab === "qa" ? "active" : ""}`}
+                    onClick={() => setInspectorTab("qa")}
+                  >
+                    <Search size={14} />
+                    <span>AI 问答 (RAG)</span>
+                  </button>
+                  <button
+                    role="tab"
+                    type="button"
                     aria-selected={inspectorTab === "pages"}
                     className={`inspector-tab ${inspectorTab === "pages" ? "active" : ""}`}
                     onClick={() => setInspectorTab("pages")}
@@ -565,13 +700,13 @@ function App() {
                       <div className="parse-summary-main">
                         <strong>
                           {selected.status === "ready"
-                            ? "已完成关键词、表格 Key-Value 与段落切块"
+                            ? "已完成关键词、表格 KV、段落切块与 pgvector 向量化"
                             : "尚未生成结构化切块"}
                         </strong>
                         <span>
                           {chunksData && chunksData.total_chunks > 0
-                            ? `共 ${chunksData.total_chunks} 块：段落 ${chunksData.text_chunks} · 表格 ${chunksData.table_chunks} · 图片 ${chunksData.image_chunks}`
-                            : "点击右侧按钮自动提取文档关键词、表格键值与完整段落切块"}
+                            ? `共 ${chunksData.total_chunks} 块（已向量化 ${chunksData.embedded_chunks ?? chunksData.total_chunks} 块 · ${aiConfig?.embedding_model ?? "256d"}）：段落 ${chunksData.text_chunks} · 表格 ${chunksData.table_chunks} · 图片 ${chunksData.image_chunks}`
+                            : "点击右侧按钮自动提取文档关键词、表格键值、完整段落并生成 pgvector 向量"}
                         </span>
                       </div>
                       <button
@@ -640,14 +775,45 @@ function App() {
                           图片 ({chunksData?.image_chunks ?? 0})
                         </button>
                       </div>
+                      <div className="search-mode-bar">
+                        <div className="search-mode-group" role="group" aria-label="检索模式">
+                          <button
+                            type="button"
+                            className={`mode-pill ${searchMode === "hybrid" ? "active" : ""}`}
+                            onClick={() => setSearchMode("hybrid")}
+                          >
+                            混合检索 (Hybrid)
+                          </button>
+                          <button
+                            type="button"
+                            className={`mode-pill ${searchMode === "semantic" ? "active" : ""}`}
+                            onClick={() => setSearchMode("semantic")}
+                          >
+                            向量语义 (pgvector)
+                          </button>
+                          <button
+                            type="button"
+                            className={`mode-pill ${searchMode === "keyword" ? "active" : ""}`}
+                            onClick={() => setSearchMode("keyword")}
+                          >
+                            关键词 (Keyword)
+                          </button>
+                        </div>
+                        {aiConfig && (
+                          <span className="ai-config-chip" title={`配置文件: ${aiConfig.config_file}`}>
+                            向量: {aiConfig.active_embedding} · LLM: {aiConfig.active_llm}
+                          </span>
+                        )}
+                      </div>
                       <label className="chunk-search-input">
                         <Search size={14} />
                         <input
                           type="search"
                           value={chunkQuery}
                           onChange={(e) => setChunkQuery(e.target.value)}
-                          placeholder="输入问题或关键词过滤切块…"
+                          placeholder="输入跨语言语义问题（如：自注意力机制复杂度）或关键词检索…"
                         />
+                        {searchingChunks && <RefreshCw className="spin" size={13} />}
                         {chunkQuery && (
                           <button type="button" onClick={() => setChunkQuery("")} aria-label="清空过滤">
                             <X size={13} />
@@ -685,6 +851,14 @@ function App() {
                                 <span>跳转预览</span>
                               </button>
                               <div className="page-card-meta">
+                                {hitMap.get(chunk.id) && (
+                                  <span className="score-badge">
+                                    综合 {hitMap.get(chunk.id)!.score.toFixed(2)} · 向量 {hitMap.get(chunk.id)!.semantic_score.toFixed(2)}
+                                  </span>
+                                )}
+                                {chunk.has_embedding && !hitMap.get(chunk.id) && (
+                                  <span className="vector-badge">pgvector 256d</span>
+                                )}
                                 <span>{chunk.char_count.toLocaleString()} 字符</span>
                                 <span className={`chunk-type-badge ${chunk.chunk_type}`}>
                                   {chunkTypeLabel[chunk.chunk_type]}
@@ -724,6 +898,191 @@ function App() {
                           </article>
                         ))}
                       </div>
+                    )}
+                  </div>
+                ) : inspectorTab === "qa" ? (
+                  <div className="parsed-pages-panel">
+                    <div className="rag-qa-box">
+                      <div className="search-mode-bar">
+                        <strong>带页码引用溯源的 RAG 问答</strong>
+                        <div className="page-card-meta">
+                          {aiConfig && (
+                            <span className={aiConfig.llm_api_configured ? "score-badge" : "ai-config-chip"}>
+                              {aiConfig.active_llm} ({aiConfig.llm_model}) ·{" "}
+                              {aiConfig.llm_api_configured
+                                ? `已配 Key (${aiConfig.llm_api_key_masked || "****"})`
+                                : "离线抽取模式"}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => setConfigOpen((v) => !v)}
+                          >
+                            {configOpen ? "收起配置" : "配置模型 / API Key"}
+                          </button>
+                        </div>
+                      </div>
+
+                      {configOpen && (
+                        <div className="llm-config-card">
+                          <div className="llm-config-grid">
+                            <label className="llm-config-field">
+                              <span>选择大模型厂商</span>
+                              <select
+                                value={cfgProvider}
+                                onChange={(e) => handleSelectProvider(e.target.value)}
+                              >
+                                {(aiConfig?.available_llm_providers ?? ["deepseek", "qwen", "openai"]).map((p) => (
+                                  <option key={p} value={p}>
+                                    {p === "deepseek"
+                                      ? "DeepSeek (deepseek)"
+                                      : p === "qwen"
+                                        ? "通义千问 / 百炼 (qwen)"
+                                        : p === "openai"
+                                          ? "OpenAI 兼容接口 (openai)"
+                                          : p}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="llm-config-field">
+                              <span>模型名称 (Model)</span>
+                              <input
+                                type="text"
+                                value={cfgModel}
+                                onChange={(e) => setCfgModel(e.target.value)}
+                                placeholder="如 deepseek-chat / qwen-plus"
+                              />
+                            </label>
+                            <label className="llm-config-field">
+                              <span>API 地址 (Base URL)</span>
+                              <input
+                                type="text"
+                                value={cfgBaseUrl}
+                                onChange={(e) => setCfgBaseUrl(e.target.value)}
+                                placeholder="https://api.deepseek.com/v1"
+                              />
+                            </label>
+                            <label className="llm-config-field">
+                              <span>
+                                API Key{" "}
+                                {aiConfig?.llm_presets?.[cfgProvider]?.api_configured
+                                  ? `（已存 ${aiConfig.llm_presets[cfgProvider].api_key_masked}，留空保持不变）`
+                                  : "（填入 sk-... 密钥）"}
+                              </span>
+                              <input
+                                type="password"
+                                value={cfgApiKey}
+                                onChange={(e) => setCfgApiKey(e.target.value)}
+                                placeholder="sk-..."
+                              />
+                            </label>
+                          </div>
+                          <div className="llm-config-actions">
+                            <small>保存后自动写入本地 config/ai_providers.json（已忽略 Git 提交）</small>
+                            <button
+                              type="button"
+                              className="primary-button"
+                              disabled={savingConfig}
+                              onClick={() => void handleSaveAIConfig()}
+                            >
+                              {savingConfig ? "保存中…" : "保存并连接模型"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      <form
+                        className="rag-qa-form"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          void handleAskQuestion();
+                        }}
+                      >
+                        <input
+                          type="text"
+                          value={qaQuestion}
+                          onChange={(e) => setQaQuestion(e.target.value)}
+                          placeholder="输入你的研究问题（如：本文提出的核心架构与自注意力机制复杂度优势是什么？）"
+                        />
+                        <button
+                          className="primary-button"
+                          type="submit"
+                          disabled={qaLoading || !qaQuestion.trim()}
+                        >
+                          {qaLoading ? <><RefreshCw className="spin" size={14} /> 检索生成中</> : <><Sparkles size={14} /> 提问</>}
+                        </button>
+                      </form>
+                      <div className="keywords-list">
+                        {[
+                          "为什么使用 Self-Attention，它在计算复杂度和并行化上有什么优势？",
+                          "本文的模型架构、核心指标或实验结果是什么？",
+                          "这份文档的阶段规划与核心任务有哪些？",
+                        ].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            className="keyword-pill"
+                            onClick={() => void handleAskQuestion(preset)}
+                          >
+                            {preset}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {qaResult && (
+                      <>
+                        {qaResult.llm_error && (
+                          <div className="parse-error-banner" role="alert">
+                            <AlertCircle size={15} />
+                            <span>
+                              大模型 API 调用未通过（已自动降级为离线证据模式）：{qaResult.llm_error}
+                            </span>
+                          </div>
+                        )}
+                        <div className="rag-answer-card">
+                          <div className="rag-answer-header">
+                            <strong>AI 回答（基于 Top-{qaResult.citations.length} 检索证据）</strong>
+                            <span className="vector-badge">
+                              {qaResult.used_extractive_fallback
+                                ? "离线证据综合 (Extractive)"
+                                : `${qaResult.llm_provider}:${qaResult.llm_model}`}
+                            </span>
+                          </div>
+                          <div className="rag-answer-body">{qaResult.answer}</div>
+                        </div>
+
+                        <div className="rag-citations-list">
+                          {qaResult.citations.map((cit) => (
+                            <article
+                              key={cit.chunk_id}
+                              className={`page-card chunk-card chunk-${cit.chunk_type} ${activePdfPage === cit.page_number ? "is-active" : ""}`}
+                            >
+                              <header className="page-card-header">
+                                <button
+                                  type="button"
+                                  className="page-jump-button"
+                                  onClick={() => setActivePdfPage(cit.page_number)}
+                                >
+                                  <strong>[{cit.citation_index}] 第 {cit.page_number} 页 · #{cit.chunk_index + 1}</strong>
+                                  <span>点击跳转原文</span>
+                                </button>
+                                <div className="page-card-meta">
+                                  <span className="score-badge">
+                                    综合 {cit.score.toFixed(2)} · 向量 {cit.semantic_score.toFixed(2)}
+                                  </span>
+                                  <span className={`chunk-type-badge ${cit.chunk_type}`}>
+                                    {chunkTypeLabel[cit.chunk_type]}
+                                  </span>
+                                </div>
+                              </header>
+                              {cit.title && <div className="chunk-card-title">{cit.title}</div>}
+                              <pre className="page-card-text">{cit.snippet}</pre>
+                            </article>
+                          ))}
+                        </div>
+                      </>
                     )}
                   </div>
                 ) : inspectorTab === "pages" ? (

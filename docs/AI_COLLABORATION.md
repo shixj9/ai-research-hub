@@ -2,9 +2,9 @@
 
 本文件用于用户、Codex 与 Antigravity 在同一项目中共享事实、决策、任务状态和交接信息。开始新的项目任务前应先阅读本文件，但它不覆盖用户的最新指令、项目 `AGENTS.md` 或安全规则。
 
-最后审计时间：2026-11-07  
-当前版本：`v0.3` 结构化切块、关键词提取、表格 KV 与图片预览闭环  
-当前阶段结论：基础设施、PDF 上传、文档管理、PDF 逐页解析（`document_pages`）、结构化切块（`document_chunks`：完整自然段 + `pdfplumber` 表格 Key-Value + 内嵌图片落盘与预留）、文档关键词提取、关键词切块检索及前端可视化已全部可用；OCR、向量检索（`pgvector`）与 RAG 问答尚未开始。
+最后审计时间：2026-11-09  
+当前版本：`v0.4` `pgvector` 向量混合检索、RAG 引用溯源问答与模型动态配置闭环  
+当前阶段结论：基础设施、PDF 上传、逐页解析（`document_pages`）、结构化切块（`document_chunks`）、`pgvector` 256 维向量化与 HNSW 索引、混合检索（Hybrid = 向量语义 + 关键词打分）、带 `[1][2]` 页码引用溯源的 RAG 问答（`POST /documents/{id}/ask`）以及前端可视化模型/API Key 配置（持久化至 `config/ai_providers.json`）已全部可用。
 
 ## 1. 共同目标
 
@@ -240,6 +240,33 @@ Service 业务流程
 - 重大方案存在分歧时并列理由，交给用户决定，不通过相互覆盖代码解决。
 
 ## 13. 最近通信记录
+
+### 2026-11-09 16:51 - Antigravity → 用户 & Codex：完成 v0.4 全闭环（pgvector 混合检索 + 带页码引用 RAG 问答 + 前端模型/API Key 动态配置）并规划 v0.5~v0.8 演进路线
+
+- 状态：`DONE`
+- 用户目标：完成 `v0.4` 混合检索与带页码引用的 RAG 问答，支持在前端直接切换大模型并填入 API Key，同时规划后续功能演进路线。
+- 本次完成：
+  1. **Step 1（Embedding + `pgvector` 混合检索）**：新增 `20261109_0005_add_pgvector_and_chunk_embeddings.py` 迁移（启用 `vector` 扩展、新增 `embedding vector(256)` 与 HNSW 索引），新建 `backend/app/services/embedding_service.py`，升级 `GET /api/v1/documents/search` 支持 `hybrid` / `semantic` / `keyword` 三模式。
+  2. **Step 2（带页码/切块引用溯源的 RAG 问答）**：新建 `backend/app/services/rag_qa.py`，挂载 `POST /api/v1/documents/ask` 与 `POST /api/v1/documents/{id}/ask`，基于 Top-K 混合检索切块构造防幻觉提示词，调用外部 LLM 生成带 `[1][2]` 引用角标的回答（未配 Key 或异常时自动降级为离线证据综合并透传具体错误提示）。
+  3. **Step 3（前端 RAG 问答面板与在线配置 API Key）**：新增 `GET/PUT /api/v1/documents/ai-config` 接口与 `config/ai_providers.example.json` 模板；在前端详情页新增「AI 问答 (RAG)」标签页与「配置模型 / API Key」可视化面板，支持一键切换 `deepseek` / `qwen` / `openai`、填入 `sk-...` 密钥并点击引用角标联动左侧 PDF 翻页。
+- 验证命令与结果：`uv run pytest`（19 passed in 0.67s）、`uv run ruff check .`（All checks passed）、`npm --prefix frontend run build`（通过）。
+- 后续演进路线图（`v0.5` ～ `v0.8` 备选方案）：
+  - **方案一（`v0.5`）**：SSE 流式打字机问答输出 + 多轮对话上下文 + 一键生成「论文结构化精读报告卡片」（背景痛点 / 核心架构 / 实验对比 / 局限启发）。
+  - **方案二（`v0.6`）**：激活 `v0.3` 预留的图片切块——接入视觉大模型（VLM）解析论文架构图/实验图 + 扫描件 OCR 兜底（图文多模态 RAG）。
+  - **方案三（`v0.7`）**：跨多篇论文对比研究 Agent（Plan-and-Solve 拆解子查询 → 多文档并行检索 → 生成带页码引用的横向对比矩阵表）。
+  - **方案四（`v0.8`）**：后台异步解析进度条 + Reranker 二阶段重排序（`bge-reranker`）+ RAG 检索命中率（Recall@K）量化评测面板。
+
+### 2026-11-09 14:35 - Antigravity → 用户 & Codex：完成 v0.4 第一步（Embedding + pgvector 混合检索 + JSON 模型配置中心）
+
+- 状态：`DONE`
+- 用户目标：执行 `v0.4` 第一步，接入 Embedding 与 `pgvector` 混合检索，并通过一个 JSON 配置文件支持快速接入各类外部大模型/向量 API。
+- 本次完成：
+  1. **JSON 模型配置中心**：新增 `config/ai_providers.example.json`（提交 Git）与 `config/ai_providers.json`（加入 `.gitignore` 防止密钥泄露），预设 `local_bilingual`（内置 256 维中英双语语义向量，零 API Key 开箱即用）、`qwen`（通义千问）、`siliconflow`（硅基流动 BGE-M3）、`deepseek`、`openai` 模板；新增 `GET /api/v1/documents/ai-config` 接口。
+  2. **PostgreSQL `pgvector` 扩展与 HNSW 索引**：新增迁移 `20261109_0005_add_pgvector_and_chunk_embeddings.py`，启用 PostgreSQL `vector` 扩展，在 `document_chunks` 表新增 `embedding vector(256)` 与 `embedding_model` 字段，并建立 `ix_document_chunks_embedding_hnsw`（`vector_cosine_ops`）索引；通过自定义 `EmbeddingVector` 类型同时兼容 PostgreSQL 原生 `vector(256)` 与 SQLite 单元测试。
+  3. **混合检索服务（Hybrid Search）**：新建 `backend/app/services/embedding_service.py`，升级 `document_parser.py`（解析时自动批量生成切块向量）与 `document_chunker.py`（`GET /api/v1/documents/search` 支持 `mode=hybrid|semantic|keyword`），在 PostgreSQL 下直接调用 `<=>` 余弦距离算子并与关键词得分融合。
+  4. **前端检索体验升级**：在详情页「结构化切块」面板新增「混合检索 (Hybrid) / 向量语义 (pgvector) / 关键词 (Keyword)」模式切换、JSON 模型配置状态标签及每个命中切块的 `综合分 · 向量相似度` 徽章。
+- 验证命令与结果：`uv run alembic upgrade head`（升级至 `20261109_0005`）、真实 PostgreSQL 两篇文档重解析（163 个切块全部写入 256 维向量，中文跨语言搜 `“自注意力机制并行计算复杂度”` 精准命中英文论文 P6 `4 Why Self-Attention`，向量相似度 `0.79`）、`uv run pytest`（18 passed）、`uv run ruff check .`（通过）、`npm --prefix frontend run build`（通过）。
+- 建议下一步：进入 `v0.4` 第二步——基于混合检索与 `config/ai_providers.json` 中配置的 LLM 实现**带页码/切块引用溯源的 RAG 问答（Grounded Q&A）**。
 
 ### 2026-11-02 13:14 - Antigravity → 用户 & Codex：完成 v0.3 文档关键词自动提取 + 表格 Key-Value 绑定 + 完整段落切块 + 图片预留与前端可视化
 

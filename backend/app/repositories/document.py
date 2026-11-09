@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import Float, delete, func, select
 from sqlalchemy.orm import Session
 
 from backend.app.models.document import Document
@@ -18,6 +18,7 @@ from backend.app.schemas.document import (
     DocumentStatus,
     DocumentUpdate,
 )
+from backend.app.services.embedding_service import cosine_similarity
 
 
 class DocumentRepository:
@@ -134,6 +135,8 @@ class DocumentRepository:
                     metadata_json=json.dumps(chunk.meta, ensure_ascii=False)
                     if chunk.meta
                     else None,
+                    embedding=chunk.embedding,
+                    embedding_model=chunk.embedding_model,
                 )
                 for chunk in chunks
             ]
@@ -172,6 +175,8 @@ class DocumentRepository:
                 metadata_json=json.dumps(chunk.meta, ensure_ascii=False)
                 if chunk.meta
                 else None,
+                embedding=chunk.embedding,
+                embedding_model=chunk.embedding_model,
             )
             for chunk in chunks
         ]
@@ -213,16 +218,53 @@ class DocumentRepository:
         *,
         document_id: UUID | None = None,
         chunk_type: DocumentChunkType | None = None,
-    ) -> list[tuple[DocumentChunk, str]]:
-        stmt = (
+        query_vector: list[float] | None = None,
+    ) -> list[tuple[DocumentChunk, str, float]]:
+        dialect_name = db.get_bind().dialect.name
+
+        if dialect_name == "postgresql" and query_vector is not None:
+            distance_expr = DocumentChunk.embedding.op("<=>", return_type=Float())(query_vector)
+            stmt = (
+                select(DocumentChunk, Document.title, distance_expr)
+                .join(Document, Document.id == DocumentChunk.document_id)
+                .where(Document.deleted_at.is_(None))
+            )
+            if document_id is not None:
+                stmt = stmt.where(DocumentChunk.document_id == document_id)
+            if chunk_type is not None:
+                stmt = stmt.where(DocumentChunk.chunk_type == chunk_type.value)
+            stmt = stmt.order_by(distance_expr.asc().nulls_last(), DocumentChunk.chunk_index.asc())
+            rows = db.execute(stmt).all()
+            result: list[tuple[DocumentChunk, str, float]] = []
+            for chunk_model, doc_title, dist in rows:
+                if dist is not None:
+                    sim = max(0.0, min(1.0, 1.0 - float(dist)))
+                else:
+                    sim = cosine_similarity(chunk_model.embedding, query_vector)
+                result.append((chunk_model, doc_title, sim))
+            return result
+
+        stmt_fallback = (
             select(DocumentChunk, Document.title)
             .join(Document, Document.id == DocumentChunk.document_id)
             .where(Document.deleted_at.is_(None))
         )
         if document_id is not None:
-            stmt = stmt.where(DocumentChunk.document_id == document_id)
+            stmt_fallback = stmt_fallback.where(DocumentChunk.document_id == document_id)
         if chunk_type is not None:
-            stmt = stmt.where(DocumentChunk.chunk_type == chunk_type.value)
-        stmt = stmt.order_by(Document.created_at.desc(), DocumentChunk.chunk_index.asc())
-        rows = db.execute(stmt).all()
-        return [(row[0], row[1]) for row in rows]
+            stmt_fallback = stmt_fallback.where(DocumentChunk.chunk_type == chunk_type.value)
+        stmt_fallback = stmt_fallback.order_by(
+            Document.created_at.desc(),
+            DocumentChunk.chunk_index.asc(),
+        )
+        rows_fb = db.execute(stmt_fallback).all()
+        return [
+            (
+                row[0],
+                row[1],
+                cosine_similarity(row[0].embedding, query_vector)
+                if query_vector is not None
+                else 0.0,
+            )
+            for row in rows_fb
+        ]

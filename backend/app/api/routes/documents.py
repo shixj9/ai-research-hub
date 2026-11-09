@@ -21,6 +21,8 @@ from backend.app.db.session import get_db
 from backend.app.models.document import Document
 from backend.app.repositories.document import DocumentRepository
 from backend.app.schemas.document import (
+    AIConfigSummaryResponse,
+    AIConfigUpdateRequest,
     ChunkSearchResponse,
     DocumentChunkListResponse,
     DocumentChunkType,
@@ -30,6 +32,9 @@ from backend.app.schemas.document import (
     DocumentParseResponse,
     DocumentResponse,
     DocumentUpdate,
+    RagAskRequest,
+    RagAskResponse,
+    SearchMode,
 )
 from backend.app.services.document_chunker import search_document_chunks
 from backend.app.services.document_parser import (
@@ -46,6 +51,11 @@ from backend.app.services.document_upload import (
     PdfTooLargeError,
     save_pdf_document,
 )
+from backend.app.services.embedding_service import (
+    get_ai_config_summary,
+    update_ai_providers_config,
+)
+from backend.app.services.rag_qa import answer_question_with_rag
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 DatabaseSession = Annotated[Session, Depends(get_db)]
@@ -57,6 +67,26 @@ def _get_document_or_404(db: Session, document_id: UUID) -> Document:
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     return document
+
+
+@router.get("/ai-config", response_model=AIConfigSummaryResponse)
+def get_ai_config() -> AIConfigSummaryResponse:
+    return AIConfigSummaryResponse(**get_ai_config_summary())
+
+
+@router.put("/ai-config", response_model=AIConfigSummaryResponse)
+def update_ai_config(payload: AIConfigUpdateRequest) -> AIConfigSummaryResponse:
+    updated = update_ai_providers_config(
+        active_llm=payload.active_llm,
+        llm_model=payload.llm_model,
+        llm_base_url=payload.llm_base_url,
+        llm_api_key=payload.llm_api_key,
+        active_embedding=payload.active_embedding,
+        embedding_model=payload.embedding_model,
+        embedding_base_url=payload.embedding_base_url,
+        embedding_api_key=payload.embedding_api_key,
+    )
+    return AIConfigSummaryResponse(**updated)
 
 
 @router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
@@ -123,14 +153,37 @@ def search_chunks(
     q: Annotated[str, Query(min_length=1, max_length=200)],
     document_id: Annotated[UUID | None, Query()] = None,
     chunk_type: Annotated[DocumentChunkType | None, Query()] = None,
+    mode: Annotated[SearchMode, Query()] = SearchMode.HYBRID,
+    limit: Annotated[int, Query(ge=1, le=100)] = 30,
 ) -> ChunkSearchResponse:
     return search_document_chunks(
         db,
         q,
         document_id=document_id,
         chunk_type=chunk_type,
+        mode=mode,
+        limit=limit,
     )
 
+
+@router.post("/ask", response_model=RagAskResponse)
+def ask_documents(
+    payload: RagAskRequest,
+    db: DatabaseSession,
+) -> RagAskResponse:
+    if payload.document_id is not None:
+        _get_document_or_404(db, payload.document_id)
+    return answer_question_with_rag(db, payload)
+
+
+@router.post("/{document_id}/ask", response_model=RagAskResponse)
+def ask_single_document(
+    document_id: UUID,
+    payload: RagAskRequest,
+    db: DatabaseSession,
+) -> RagAskResponse:
+    _get_document_or_404(db, document_id)
+    return answer_question_with_rag(db, payload, override_document_id=document_id)
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)
@@ -211,7 +264,6 @@ def open_document_figure(
             detail="Figure not found",
         )
     return FileResponse(file_path, media_type="image/png", content_disposition_type="inline")
-
 
 
 @router.patch("/{document_id}", response_model=DocumentResponse)

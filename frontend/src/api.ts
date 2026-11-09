@@ -1,4 +1,5 @@
 import type {
+  AIConfigSummary,
   ChunkSearchResponse,
   DocumentChunkListResponse,
   DocumentChunkType,
@@ -6,6 +7,7 @@ import type {
   DocumentPageListResponse,
   DocumentParseResponse,
   DocumentRecord,
+  SearchMode,
 } from "./types";
 
 export const API_BASE_URL = (
@@ -37,6 +39,20 @@ export async function checkBackend(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export function getAIConfig(): Promise<AIConfigSummary> {
+  return request<AIConfigSummary>("/documents/ai-config");
+}
+
+export function updateAIConfig(
+  payload: import("./types").AIConfigUpdatePayload,
+): Promise<AIConfigSummary> {
+  return request<AIConfigSummary>("/documents/ai-config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export function listDocuments(): Promise<DocumentListResponse> {
@@ -74,16 +90,34 @@ export function listDocumentChunks(
 
 export function searchDocumentChunks(
   q: string,
-  documentId?: string,
-  chunkType?: DocumentChunkType,
+  options?: {
+    documentId?: string;
+    chunkType?: DocumentChunkType;
+    mode?: SearchMode;
+  },
 ): Promise<ChunkSearchResponse> {
   const params = new URLSearchParams({ q });
-  if (documentId) params.set("document_id", documentId);
-  if (chunkType) params.set("chunk_type", chunkType);
+  if (options?.documentId) params.set("document_id", options.documentId);
+  if (options?.chunkType) params.set("chunk_type", options.chunkType);
+  if (options?.mode) params.set("mode", options.mode);
   return request<ChunkSearchResponse>(`/documents/search?${params.toString()}`);
 }
 
 export function documentFileUrl(documentId: string, pageNumber?: number): string {
   const base = `${API_BASE_URL}/documents/${documentId}/file`;
   return pageNumber && pageNumber >= 1 ? `${base}#page=${pageNumber}` : base;
+}
+
+
+export function askDocumentQuestion(
+  documentId: string,
+  question: string,
+  mode: SearchMode = "hybrid",
+  topK = 4,
+): Promise<import("./types").RagAskResponse> {
+  return request<import("./types").RagAskResponse>(`/documents/${documentId}/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, mode, top_k: topK }),
+  });
 }

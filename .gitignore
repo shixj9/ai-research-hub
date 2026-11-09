@@ -10,6 +10,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+config/ai_providers.json
 
 # Local HTTPS certificates
 backend/certs/

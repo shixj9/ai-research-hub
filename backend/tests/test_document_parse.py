@@ -278,3 +278,104 @@ def test_table_key_value_binding_and_sparse_table_filtering() -> None:
     sample_raw = "This is a trans-\nformer model.\n\n1. Introduction\nWe propose RAG."
     paragraphs = clean_page_paragraphs(sample_raw)
     assert "This is a transformer model." in paragraphs[0]
+
+
+def test_v04_embeddings_and_hybrid_bilingual_semantic_search(
+    client: ApiClient,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    configure_storage(monkeypatch, tmp_path)
+    pdf_bytes = make_pdf_with_pages(
+        [
+            "Self-attention mechanism reduces sequential computation complexity and parallelizes.",
+            "Adam optimizer with warmup learning rate schedule and dropout during model training.",
+        ]
+    )
+
+    upload_resp = client.post(
+        "/api/v1/documents/upload",
+        data={"title": "Bilingual Semantic Test"},
+        files={"file": ("semantic.pdf", pdf_bytes, "application/pdf")},
+    )
+    assert upload_resp.status_code == 201
+    doc_id = upload_resp.json()["id"]
+
+    parse_resp = client.post(f"/api/v1/documents/{doc_id}/parse")
+    assert parse_resp.status_code == 200
+    parsed = parse_resp.json()
+    assert parsed["embedded_chunks"] == parsed["total_chunks"]
+    assert parsed["embedded_chunks"] >= 2
+    assert parsed["embedding_model"] is not None
+
+    chunks_resp = client.get(f"/api/v1/documents/{doc_id}/chunks")
+    assert chunks_resp.status_code == 200
+    chunks_payload = chunks_resp.json()
+    assert chunks_payload["embedded_chunks"] >= 2
+    assert all(item["has_embedding"] for item in chunks_payload["items"])
+
+    # Cross-lingual semantic query in Chinese matching English text on Page 1
+    sem_resp = client.get(
+        "/api/v1/documents/search",
+        params={
+            "q": "自注意力机制与并行计算复杂度",
+            "document_id": doc_id,
+            "mode": "hybrid",
+        },
+    )
+    assert sem_resp.status_code == 200
+    sem_data = sem_resp.json()
+    assert sem_data["mode"] == "hybrid"
+    assert sem_data["total"] >= 1
+    top_hit = sem_data["items"][0]
+    assert top_hit["chunk"]["page_number"] == 1
+    assert top_hit["semantic_score"] > 0.2
+
+
+def test_ai_providers_json_config_endpoint(client: ApiClient) -> None:
+    resp = client.get("/api/v1/documents/ai-config")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["embedding_dimensions"] == 256
+    assert "local_bilingual" in data["available_embedding_providers"]
+    assert "deepseek" in data["available_llm_providers"]
+
+
+
+def test_v04_rag_grounded_qa_with_citations(
+    client: ApiClient,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    configure_storage(monkeypatch, tmp_path)
+    pdf_bytes = make_pdf_with_pages(
+        [
+            "Encoder and decoder stack consists of 6 identical layers.",
+            "BLEU score on WMT 2014 English-to-German translation reaches 28.4.",
+        ]
+    )
+
+    upload_resp = client.post(
+        "/api/v1/documents/upload",
+        data={"title": "Attention BLEU Report"},
+        files={"file": ("bleu.pdf", pdf_bytes, "application/pdf")},
+    )
+    assert upload_resp.status_code == 201
+    doc_id = upload_resp.json()["id"]
+    client.post(f"/api/v1/documents/{doc_id}/parse")
+
+    ask_resp = client.post(
+        f"/api/v1/documents/{doc_id}/ask",
+        json={
+            "question": "WMT 2014 翻译实验的 BLEU 分数是多少？",
+            "mode": "hybrid",
+            "top_k": 3,
+        },
+    )
+    assert ask_resp.status_code == 200
+    data = ask_resp.json()
+    assert "[1]" in data["answer"]
+    assert len(data["citations"]) >= 1
+    assert data["citations"][0]["citation_index"] == 1
+    assert data["citations"][0]["page_number"] == 2
+    assert "28.4" in data["citations"][0]["snippet"]

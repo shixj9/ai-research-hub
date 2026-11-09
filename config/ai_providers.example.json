@@ -1,0 +1,68 @@
+{
+  "active_embedding": "local_bilingual",
+  "active_llm": "deepseek",
+  "embedding_dimensions": 256,
+  "embedding_providers": {
+    "local_bilingual": {
+      "type": "local_hash",
+      "model": "bilingual-semantic-256d",
+      "description": "内置离线中英双语语义哈希向量（256维，无需 API Key，开箱即用）"
+    },
+    "qwen": {
+      "type": "openai_compatible",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key": "",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "model": "text-embedding-v3",
+      "description": "阿里云百炼 / 通义千问 Embedding API（填入 api_key 并将 active_embedding 设为 qwen 即可启用）"
+    },
+    "siliconflow": {
+      "type": "openai_compatible",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "api_key": "",
+      "api_key_env": "SILICONFLOW_API_KEY",
+      "model": "BAAI/bge-m3",
+      "description": "硅基流动 BGE-M3 向量接口（支持中英混合长文本）"
+    },
+    "openai": {
+      "type": "openai_compatible",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "text-embedding-3-small",
+      "description": "OpenAI 官方或兼容接口"
+    }
+  },
+  "llm_providers": {
+    "deepseek": {
+      "type": "openai_compatible",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-chat",
+      "temperature": 0.2,
+      "max_tokens": 1500,
+      "description": "DeepSeek 官方 API（用于后续 RAG 问答与结构化分析）"
+    },
+    "qwen": {
+      "type": "openai_compatible",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key": "",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "model": "qwen-plus",
+      "temperature": 0.2,
+      "max_tokens": 1500,
+      "description": "阿里云百炼 / 通义千问大模型接口"
+    },
+    "openai": {
+      "type": "openai_compatible",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "api_key_env": "OPENAI_API_KEY",
+      "model": "gpt-4o-mini",
+      "temperature": 0.2,
+      "max_tokens": 1500,
+      "description": "OpenAI 官方或兼容接口（如本地 Ollama / vLLM）"
+    }
+  }
+}

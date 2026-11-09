@@ -17,7 +17,9 @@ from backend.app.schemas.document import (
     DocumentChunkCreate,
     DocumentChunkResponse,
     DocumentChunkType,
+    SearchMode,
 )
+from backend.app.services.embedding_service import embed_query
 
 STOPWORDS = {
     "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
@@ -434,22 +436,35 @@ def search_document_chunks(
     *,
     document_id: UUID | None = None,
     chunk_type: DocumentChunkType | None = None,
+    mode: SearchMode = SearchMode.HYBRID,
     limit: int = 30,
 ) -> ChunkSearchResponse:
     keywords = extract_query_keywords(query)
-    if not keywords:
-        return ChunkSearchResponse(query=query, extracted_keywords=[], total=0, items=[])
+    if not query.strip():
+        return ChunkSearchResponse(
+            query=query,
+            mode=mode,
+            extracted_keywords=[],
+            total=0,
+            items=[],
+        )
+
+    query_vector: list[float] | None = None
+    embedding_model_label = "local_bilingual:bilingual-semantic-256d"
+    if mode in (SearchMode.HYBRID, SearchMode.SEMANTIC):
+        query_vector, embedding_model_label = embed_query(query)
 
     candidates = DocumentRepository.list_searchable_chunks(
         db,
         document_id=document_id,
         chunk_type=chunk_type,
+        query_vector=query_vector,
     )
     hits: list[ChunkSearchHit] = []
-    for chunk_model, doc_title in candidates:
+    for chunk_model, doc_title, semantic_sim in candidates:
         haystack = f"{chunk_model.title or ''}\n{chunk_model.content}".lower()
         matched: list[str] = []
-        score = 0.0
+        kw_raw_score = 0.0
         for kw in keywords:
             kw_low = kw.lower()
             count = haystack.count(kw_low)
@@ -457,20 +472,49 @@ def search_document_chunks(
                 matched.append(kw)
                 title_bonus = 2.5 if kw_low in (chunk_model.title or "").lower() else 0.0
                 type_bonus = 1.2 if chunk_model.chunk_type == "table" else 1.0
-                score += (3.0 + min(count, 5) * 0.8 + title_bonus) * type_bonus
-        if matched:
-            hits.append(
-                ChunkSearchHit(
-                    chunk=DocumentChunkResponse.model_validate(chunk_model),
-                    document_title=doc_title,
-                    score=round(score, 2),
-                    matched_keywords=matched,
-                )
-            )
+                kw_raw_score += (3.0 + min(count, 5) * 0.8 + title_bonus) * type_bonus
 
-    hits.sort(key=lambda item: (-len(item.matched_keywords), -item.score, item.chunk.page_number))
+        sem_score = round(max(0.0, float(semantic_sim)), 4)
+        kw_score = round(kw_raw_score, 2)
+
+        if mode == SearchMode.KEYWORD:
+            if not matched:
+                continue
+            final_score = kw_score
+        elif mode == SearchMode.SEMANTIC:
+            if sem_score < 0.08:
+                continue
+            final_score = round(sem_score * 10.0, 3)
+        else:
+            # HYBRID mode: combine pgvector semantic similarity + keyword score
+            if not matched and sem_score < 0.12:
+                continue
+            synergy_bonus = 1.8 if (matched and sem_score >= 0.15) else 0.0
+            final_score = round(kw_raw_score * 0.6 + sem_score * 8.0 + synergy_bonus, 3)
+
+        hits.append(
+            ChunkSearchHit(
+                chunk=DocumentChunkResponse.model_validate(chunk_model),
+                document_title=doc_title,
+                score=final_score,
+                semantic_score=sem_score,
+                keyword_score=kw_score,
+                matched_keywords=matched,
+            )
+        )
+
+    hits.sort(
+        key=lambda item: (
+            -item.score,
+            -item.semantic_score,
+            -len(item.matched_keywords),
+            item.chunk.page_number,
+        )
+    )
     return ChunkSearchResponse(
         query=query,
+        mode=mode,
+        embedding_model=embedding_model_label,
         extracted_keywords=keywords,
         total=len(hits),
         items=hits[:limit],

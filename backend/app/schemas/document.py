@@ -25,6 +25,12 @@ class DocumentChunkType(StrEnum):
     IMAGE = "image"
 
 
+class SearchMode(StrEnum):
+    HYBRID = "hybrid"
+    SEMANTIC = "semantic"
+    KEYWORD = "keyword"
+
+
 class DocumentCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -123,6 +129,8 @@ class DocumentChunkCreate(BaseModel):
     content: str = ""
     char_count: Annotated[int, Field(ge=0)] = 0
     meta: dict[str, Any] = Field(default_factory=dict)
+    embedding: list[float] | None = None
+    embedding_model: str | None = None
 
 
 class DocumentChunkResponse(BaseModel):
@@ -137,6 +145,8 @@ class DocumentChunkResponse(BaseModel):
     content: str
     char_count: int
     meta: dict[str, Any] = Field(default_factory=dict)
+    has_embedding: bool = False
+    embedding_model: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -150,6 +160,8 @@ class DocumentChunkListResponse(BaseModel):
     text_chunks: int
     table_chunks: int
     image_chunks: int
+    embedded_chunks: int = 0
+    embedding_model: str | None = None
     items: list[DocumentChunkResponse]
 
 
@@ -165,17 +177,90 @@ class DocumentParseResponse(BaseModel):
     text_chunks: int = 0
     table_chunks: int = 0
     image_chunks: int = 0
+    embedded_chunks: int = 0
+    embedding_model: str | None = None
 
 
 class ChunkSearchHit(BaseModel):
     chunk: DocumentChunkResponse
     document_title: str
     score: float
-    matched_keywords: list[str]
+    semantic_score: float = 0.0
+    keyword_score: float = 0.0
+    matched_keywords: list[str] = Field(default_factory=list)
 
 
 class ChunkSearchResponse(BaseModel):
     query: str
+    mode: SearchMode = SearchMode.HYBRID
+    embedding_model: str = "local_bilingual:bilingual-semantic-256d"
     extracted_keywords: list[str]
     total: int
     items: list[ChunkSearchHit]
+
+
+class AIConfigSummaryResponse(BaseModel):
+    config_file: str
+    active_embedding: str
+    embedding_model: str
+    embedding_type: str
+    embedding_dimensions: int
+    embedding_api_configured: bool
+    active_llm: str
+    llm_model: str
+    llm_base_url: str
+    llm_api_configured: bool
+    llm_api_key_masked: str = ""
+    available_embedding_providers: list[str]
+    available_llm_providers: list[str]
+    llm_presets: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class AIConfigUpdateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    active_llm: str | None = None
+    llm_model: str | None = None
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    active_embedding: str | None = None
+    embedding_model: str | None = None
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
+
+
+
+class RagAskRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    question: Annotated[str, Field(min_length=1, max_length=500)]
+    document_id: UUID | None = None
+    mode: SearchMode = SearchMode.HYBRID
+    top_k: Annotated[int, Field(ge=1, le=12)] = 5
+
+
+class RagCitation(BaseModel):
+    citation_index: int
+    chunk_id: UUID
+    document_id: UUID
+    document_title: str
+    page_number: int
+    chunk_index: int
+    chunk_type: DocumentChunkType
+    title: str | None = None
+    snippet: str
+    score: float
+    semantic_score: float = 0.0
+    keyword_score: float = 0.0
+
+
+class RagAskResponse(BaseModel):
+    question: str
+    answer: str
+    llm_provider: str
+    llm_model: str
+    used_extractive_fallback: bool
+    llm_error: str | None = None
+    retrieval_mode: SearchMode
+    embedding_model: str
+    citations: list[RagCitation] = Field(default_factory=list)
